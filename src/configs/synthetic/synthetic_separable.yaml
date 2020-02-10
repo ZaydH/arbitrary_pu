@@ -1,0 +1,30 @@
+---
+  dataset: "synthetic"
+  train_prior: 0.5
+  test_prior: 0.5
+  # Centroid Objects
+  centroids:
+    - ["NEG",       2,  -1,  1]
+    - ["NEG",       2,   1,  1]
+    - ["POS_TR",    6,  -1,  1]
+    - ["POS_TR",    6,   1,  1]
+    - ["POS_TE",   -2,  -1,  1]
+    - ["POS_TE",   -2,   1,  1]
+  # Learner parameters
+  num_epoch: 100
+  sigma_batch_size: 750
+  batch_size: 2000
+  pn_train_batch_size: 500
+  pn_test_batch_size: 500
+  # Dataset sizes
+  n_p: 1000          # Number of positive (labeled)
+  n_u_train: 1000    # Number of unlabeled (train) samples
+  n_u_test: 1000     # Number of unlabeled (test) samples
+  n_test: 1000       # Number of test samples for inductive verification
+  # General optimizer parameters
+  learning_rate: 1E-2
+  weight_decay: 0
+  gamma: 1.
+  validation_split_ratio: 0.1666667
+  # PUc parameters
+  kernel_type: "linear"

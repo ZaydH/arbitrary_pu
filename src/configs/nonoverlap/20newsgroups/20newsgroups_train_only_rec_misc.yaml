@@ -1,0 +1,59 @@
+---
+  dataset: "newsgroups"
+  train_prior: 0.56
+  test_prior: 0.56
+  # Newsgroup category and bias definitions
+  pos_train_classes: ["misc", "rec"]
+  pos_test_classes: ["alt", "comp", "misc", "rec"]
+  neg_classes: ["sci", "soc", "talk"]
+  # Learner parameters
+  num_sigma_layers: 1
+  num_ff_layers: 2
+  num_epoch: 200
+  sigma_batch_size: 2500
+  batch_size: 5000
+  pn_train_batch_size: 2000
+  pn_test_batch_size: 2000
+  # Dataset sizes
+  n_p: 600          # Number of positive (labeled)
+  n_u_train: 3000   # Number of unlabeled (train) samples
+  n_u_test: 3000    # Number of unlabeled (test) samples
+  n_test: 5000      # Number of test samples for inductive verification
+  # General optimizer parameters
+  learning_rate: 1E-3
+  weight_decay: 5E-3
+  gamma: 1.
+  validation_split_ratio: 0.16666667
+  # PUc parameters
+  kernel_type: "gaussian"
+---
+  WUU:
+    weight_decay: 1E-4
+    learning_rate: 1E-4
+    gamma: 0.5
+---
+  PURR:
+    weight_decay: 1E-3
+    learning_rate: 1E-4
+    gamma: 0.5
+---
+  aPNU:
+    weight_decay: 1E-4
+    learning_rate: 1E-4
+    gamma: 0.5
+---
+  nnPU_all:
+    weight_decay: 1E-3
+    learning_rate: 1E-3
+    gamma: 0.5
+  nnPU_te:
+    weight_decay: 1E-2
+    learning_rate: 1E-3
+    gamma: 0.5
+---
+  te_pn:
+    weight_decay: 1E-3
+    learning_rate: 1E-3
+  tr_pn:
+    weight_decay: 1E-2
+    learning_rate: 1E-3
