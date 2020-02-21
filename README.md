@@ -1,7 +1,7 @@
 # Learning from Positive & Unlabeled Data with Arbitrary Positive Shift
 
 **Authors**: [Zayd Hammoudeh](https://zaydh.github.io) & [Daniel Lowd](https://ix.cs.uoregon.edu/~lowd/)  
-**Link**: [Arxiv]()  
+**Link**: [Arxiv](https://arxiv.org/abs/2002.10261)  
 **License**: [MIT](LICENSE)  
 
 This repository contains the source code for reproducing the results in the paper "Learning from Positive and Unlabeled Data with Arbitrary Positive Shift"

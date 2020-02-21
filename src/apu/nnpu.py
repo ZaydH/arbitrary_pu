@@ -3,6 +3,8 @@ __all__ = ["APNU", "WUU", "NNPU"]
 from abc import ABC
 from typing import Callable, Optional, Set, Union
 
+import numpy as np
+
 import torch
 from torch import Tensor
 
@@ -60,7 +62,8 @@ class _NNBase(RiskEstimator, ABC):
         :param nn_risk: Risk term that cannot be negative.
         :return: Loss information with loss and gradient variables.
         """
-        loss = gradient_var = always_pos_risk + nn_risk.clamp_min(-self.beta)
+        min_clamp = -self.beta if self.is_nn else -np.inf
+        loss = gradient_var = always_pos_risk + nn_risk.clamp_min(min_clamp)
         if self.is_nn and nn_risk < -self.beta:
             gradient_var = -self.gamma * nn_risk
         return LossInfo(te_loss=loss, grad_var=gradient_var)
