@@ -4,13 +4,14 @@ from pathlib import Path
 
 import torchvision
 
+from .. import _config as config
 from .utils import shared_tensor_dataset_importer
 from .types import APU_Dataset, TensorGroup
 
 MNIST_NORMALIZE_FACTOR = 255
 
 
-def load_data(config, dest: Path) -> TensorGroup:
+def load_data(dest: Path) -> TensorGroup:
     r"""
     Loads the MNIST, FashionMNIST, and KMNIST datasets
     :return: \p TensorGroup of extracted data
@@ -32,5 +33,4 @@ def load_data(config, dest: Path) -> TensorGroup:
 
     dest /= f"{name}/processed"
     dest.mkdir(parents=True, exist_ok=True)
-    return shared_tensor_dataset_importer(config=config, dest=dest,
-                                          normalize_factor=MNIST_NORMALIZE_FACTOR)
+    return shared_tensor_dataset_importer(dest=dest, normalize_factor=MNIST_NORMALIZE_FACTOR)

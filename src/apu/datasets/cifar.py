@@ -6,13 +6,13 @@ from typing import Optional
 import fastai.vision
 from fastai.basic_data import DeviceDataLoader
 import torch
-from torch import Tensor
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 import torchvision
 import torchvision.transforms as transforms
 
-from .types import APU_Module, TensorGroup, ViewTo1D
+from .. import _config as config
+from .types import TensorGroup, ViewTo1D
 from .utils import shared_tensor_dataset_importer
 
 USE_TRANSFER = True
@@ -21,65 +21,6 @@ USE_TRANSFER = True
 # MODEL = fastai.vision.models.resnet50
 # MODEL = torchvision.models.vgg16_bn
 MODEL = fastai.vision.models.densenet121
-
-
-# class CnnModule(PurplModule):
-#     ACTIVATION = nn.ReLU
-#
-#     CONV_LAYER_FILTERS_OUT = (3 * [96]) + (5 * [192]) + (1 * [10])
-#     CONV_LAYER_KERNEL_SIZES = (7 * [3]) + (2 * [1])
-#     CONV_LAYER_STRIDE = (2 * [1]) + (1 * [2]) + (2 * [1]) + (1 * [2]) + (3 * [1])
-#     CONV_LAYER_PAD_SIZE = (7 * [1]) + (2 * [0])
-#
-#     NUM_HIDDEN_FF_LAYER = 2
-#     FF_HIDDEN_DIM = 1000
-#
-#     def __init__(self, x: Tensor):
-#         if len(x.shape) != 4:
-#             raise ValueError("Dimension of input x appears incorrect")
-#         super().__init__()
-#
-#         # Verify the convolutional settings
-#         self._num_conv_layers = len(self.CONV_LAYER_FILTERS_OUT)
-#         self._verify_conv_sizes(x)
-#
-#         self._base_mod = nn.Sequential()
-#         # Constructs the convolutional 2D
-#         flds = (self.CONV_LAYER_FILTERS_OUT, self.CONV_LAYER_KERNEL_SIZES,
-#                 self.CONV_LAYER_STRIDE, self.CONV_LAYER_PAD_SIZE)
-#         input_dim = x.shape[1]
-#         for i, (out_dim, k_size, stride, pad) in enumerate(zip(*flds)):
-#             conv_seq = nn.Sequential(nn.Conv2d(input_dim, out_dim, k_size, stride, pad),
-#                                      self.ACTIVATION(),
-#                                      nn.BatchNorm2d(out_dim))
-#             self._base_mod.add_module("Conv2D_%02d" % i, conv_seq)
-#             input_dim = out_dim
-#         self._base_mod.add_module("Flatten", ViewTo1D())
-#
-#         # Find the size of the tensor input into the FF block
-#         self._base_mod.eval()
-#         x = x.cpu()  # Base module still on CPU at this point
-#         with torch.no_grad():
-#             ff_in = self._base_mod.forward(x).shape[1]
-#         self._base_mod.train()
-#         # Constructs the FF block
-#         for i in range(1, self.NUM_HIDDEN_FF_LAYER + 1):
-#             ff_seq = nn.Sequential(nn.Linear(ff_in, self.FF_HIDDEN_DIM),
-#                                    self.ACTIVATION())
-#             ff_in = self.FF_HIDDEN_DIM
-#             self._base_mod.add_module("FF_%02d" % i, ff_seq)
-#
-#         self._model.add_module("Base Module", self._base_mod)
-#         self._model.add_module("FF_Out", nn.Linear(ff_in, 1))
-#
-#     def _verify_conv_sizes(self, x: Tensor):
-#         r""" Sanity check the dimensions of the input tensor and convolutional block """
-#         assert len(x.shape) == 4, "X tensor should be 2D"
-#
-#         assert self._num_conv_layers == len(self.CONV_LAYER_FILTERS_OUT), "# Filters mismatch"
-#         assert self._num_conv_layers == len(self.CONV_LAYER_KERNEL_SIZES), "# Kernels mismatch"
-#         assert self._num_conv_layers == len(self.CONV_LAYER_STRIDE), "# strides mismatch"
-#         assert self._num_conv_layers == len(self.CONV_LAYER_PAD_SIZE), "# paddings mismatch"
 
 
 class AdaptiveConcatPool2d(nn.Module):
@@ -118,7 +59,7 @@ def _convert_dataloader_to_tensor(output_file: Path, dl: DataLoader):
     torch.save((x.cpu(), y.cpu()), output_file)
 
 
-def _flatten_cifar(config, tensor_path: Path, dest_dir: Path, device: torch.device):
+def _flatten_cifar(tensor_path: Path, dest_dir: Path, device: torch.device):
     r""" Flattens CIFAR into preprocessed vectors """
     # `body` is the base layers of the specified model
     body = fastai.vision.create_body(MODEL)
@@ -143,7 +84,7 @@ def _flatten_cifar(config, tensor_path: Path, dest_dir: Path, device: torch.devi
     torch.save((flat_x, flat_y), dest_path)
 
 
-def load_data(config, cifar_dir: Path, device: torch.device) -> TensorGroup:
+def load_data(cifar_dir: Path, device: torch.device) -> TensorGroup:
     r""" Loads the CIFAR10 dataset """
     tfms = [transforms.ToTensor()]
 
@@ -165,7 +106,7 @@ def load_data(config, cifar_dir: Path, device: torch.device) -> TensorGroup:
 
         _convert_dataloader_to_tensor(out_name, dl)
 
-        _flatten_cifar(config, out_name, flat_dir, device)
+        _flatten_cifar(out_name, flat_dir, device)
 
     tensor_dir = flat_dir if USE_TRANSFER else processed_dir
-    return shared_tensor_dataset_importer(config, dest=tensor_dir)
+    return shared_tensor_dataset_importer(dest=tensor_dir)

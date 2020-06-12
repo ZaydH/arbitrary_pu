@@ -7,6 +7,7 @@
   pos_test_classes:  [0, 1, 8, 9]
   neg_classes: [2, 3, 4, 5, 6, 7]
   # Learner parameters
+  use_abs: True
   num_sigma_layers: 2
   num_ff_layers: 2
   num_epoch: 200
@@ -47,6 +48,10 @@
     learning_rate: 1E-4
     gamma: 0.1
   nnPU_te:
+    weight_decay: 1E-3
+    learning_rate: 1E-4
+    gamma: 0.1
+  nnPU_tr:
     weight_decay: 1E-3
     learning_rate: 1E-4
     gamma: 0.1

@@ -43,9 +43,9 @@ import torch.nn as nn
 from torch.optim.lbfgs import LBFGS
 
 from . import _config as config
-from .datasets import cifar, libsvm_ds, mnist, newsgroups, open_ml, synthetic
+from .datasets import cifar, libsvm_ds, mnist, newsgroups, open_ml, spam, synthetic
 from .datasets import utils as ds_utils
-from .datasets.types import BaseFFModule, APU_Module, TensorGroup
+from .datasets.types import APU_Module, BaseFFModule, SpamFFModule, TensorGroup
 from .types import OptStr, PathOrStr, RiskEstimator
 
 IS_CUDA = torch.cuda.is_available()
@@ -59,22 +59,7 @@ LOGGER_NAME = "apu"
 shuffle_tensors = ds_utils.shuffle_tensors
 
 
-def _check_is_talapas() -> bool:
-    r""" Returns \p True if running on the Talapas server """
-    host = socket.gethostname().lower()
-    if "talapas" in host:
-        return True
-    if re.match(r"^n\d{3}$", host):
-        return True
-
-    num_string = r"(\d{3}|\d{3}-\d{3})"
-    if re.match(f"n\\[{num_string}(,{num_string})*\\]", host):
-        return True
-    return False
-
-
-_TALAPAS_PATH = Path("/home/zhammoud/projects/apu")  # ToDo remove
-BASE_DIR = Path(".").absolute() if not _check_is_talapas() else _TALAPAS_PATH
+BASE_DIR = Path(".").absolute()
 DATA_DIR = BASE_DIR / ".data"
 NEWSGROUPS_DIR = DATA_DIR / "20_newsgroups"
 
@@ -236,15 +221,32 @@ def _add_line_from_slope_and_intercept(slope, intercept):
     plt.plot(x_vals, y_vals, '--', color="black")
 
 
-def set_random_seeds(seed: int = 42) -> None:
+def set_random_seeds(seed: Optional[int] = None) -> None:
     r"""
     Sets random seeds to avoid non-determinism
     :See: https://pytorch.org/docs/stable/notes/randomness.html
     """
-    random.seed(seed)
-    np.random.seed(seed)
+    if seed is not None:
+        logging.warning(f"Debug mode enabled. Seed {seed} used")
+        np_seed = seed
+        disable_torch_backend_randomness()
+    else:
+        seed = torch.initial_seed() & ((0x1 << 63) - 1)
+        logging.debug(f"Initial torch seed {seed} used to see all random number generators")
 
+        np_seed = int(abs(seed) & 0x7FFFFFFF)  # Max numpy seed is 2^32 - 1
+        logging.debug(f"Initial numpy seed {np_seed} derived from torch seed")
+
+    random.seed(seed)
+    np.random.seed(np_seed)
     torch.manual_seed(seed)
+
+    log_seeds()
+
+
+def disable_torch_backend_randomness():
+    r""" Torch backend randomness disabled """
+    logging.warning("Torch backend CUDNN randomness disabled")
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
@@ -354,7 +356,7 @@ class ClassifierBlock(nn.Module):
         Defines the block specific field names and sizes
         :return: Tuple of lists of the field names and widths (in number of characters) respectively
         """
-        names = [f"{self.name()} L-Train", f"{self.name()} L-Valid", f"Best"]
+        names = [f"{self.name()} L-Tr", f"{self.name()} L-Val", f"Best"]
 
         base_sizes = [20, 20, 6]
         sizes = [max(base, len(name)) for name, base in zip(names, base_sizes)]
@@ -373,24 +375,29 @@ class ClassifierBlock(nn.Module):
 
 def configure_dataset_args() -> Tuple[TensorGroup, APU_Module]:
     r""" Manages generating the source data (if not already serialized to disk """
+    use_dropout = False  # Default
     if config.DATASET.is_synthetic():
-        tensor_grp = synthetic.generate_data(config)
-
-    elif config.DATASET.is_mnist_variant():
-        tensor_grp = mnist.load_data(config, DATA_DIR)
+        tensor_grp = synthetic.generate_data()
 
     elif config.DATASET.is_cifar():
         cifar_dir = DATA_DIR / "CIFAR10"
-        tensor_grp = cifar.load_data(config, cifar_dir, TORCH_DEVICE)
-
-    elif config.DATASET.is_newsgroups():
-        tensor_grp = newsgroups.load_data(config, NEWSGROUPS_DIR)
-
-    elif config.DATASET.is_openml():
-        tensor_grp = open_ml.load_data(config, dest=DATA_DIR)
+        tensor_grp = cifar.load_data(cifar_dir, TORCH_DEVICE)
 
     elif config.DATASET.is_libsvm():
-        tensor_grp = libsvm_ds.load_data(config, dest=DATA_DIR)
+        tensor_grp = libsvm_ds.load_data(dest=DATA_DIR)
+
+    elif config.DATASET.is_mnist_variant():
+        tensor_grp = mnist.load_data(DATA_DIR)
+
+    elif config.DATASET.is_newsgroups():
+        tensor_grp = newsgroups.load_data(NEWSGROUPS_DIR)
+        use_dropout = True
+
+    elif config.DATASET.is_openml():
+        tensor_grp = open_ml.load_data(dest=DATA_DIR)
+
+    elif config.DATASET.is_spam():
+        tensor_grp = spam.load_data(dest=DATA_DIR)
 
     else:
         raise ValueError(f"Dataset generation not supported for {config.DATASET.name}")
@@ -400,8 +407,11 @@ def configure_dataset_args() -> Tuple[TensorGroup, APU_Module]:
 
     if config.DATASET.is_synthetic():
         module = synthetic.Module()
+    elif config.DATASET.is_spam():
+        module = SpamFFModule(x=tensor_grp.p_x, num_hidden_layers=config.NUM_FF_LAYERS)
     else:
-        module = BaseFFModule(x=tensor_grp.p_x, num_hidden_layers=config.NUM_FF_LAYERS)
+        module = BaseFFModule(x=tensor_grp.p_x, num_hidden_layers=config.NUM_FF_LAYERS,
+                              add_dropout=use_dropout)
     return tensor_grp, module
 
 

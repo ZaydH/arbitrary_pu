@@ -7,8 +7,9 @@
   pos_test_classes: ["soc", "talk"]
   neg_classes: ["misc", "rec"]
   # Learner parameters
+  use_abs: True
   num_sigma_layers: 1
-  num_ff_layers: 2
+  num_ff_layers: 1
   num_epoch: 200
   sigma_batch_size: 2500
   batch_size: 5000
@@ -33,7 +34,7 @@
     gamma: 0.5
 ---
   PURR:
-    weight_decay: 1E-3
+    weight_decay: 1E-4
     learning_rate: 1E-4
     gamma: 0.5
 ---

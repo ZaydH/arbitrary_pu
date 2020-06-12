@@ -10,15 +10,15 @@ from sklearn.datasets import fetch_openml
 import torch
 from torch import Tensor
 
+from .. import _config as config
 from .types import APU_Dataset, TensorGroup
 from .utils import build_puc_style_dataset
 
 
-def load_data(config, dest: Union[Path, str]) -> TensorGroup:
+def load_data(dest: Union[Path, str]) -> TensorGroup:
     r"""
     Constructs the dataset for the specified OpenML experiments
 
-    :param config: Test setup configuration
     :param dest: Base directory to store all downloaded OpenML data
     :return: TensorGroup for the experiment
     """
@@ -31,10 +31,10 @@ def load_data(config, dest: Union[Path, str]) -> TensorGroup:
 
     # Configure the data to run with torch
     x = _convert_x_tensor(x)
-    y = _convert_y_vector(config, y)
+    y = _convert_y_vector(y)
     assert x.shape[1] == ml_ds.dim[0], "Dataset dimension mismatch"
 
-    return build_puc_style_dataset(config, x, y)
+    return build_puc_style_dataset(x, y)
 
 
 def _convert_x_tensor(x: np.ndarray) -> Tensor:
@@ -48,7 +48,7 @@ def _convert_x_tensor(x: np.ndarray) -> Tensor:
     raise ValueError("Unable to convert X tensor to torch")
 
 
-def _convert_y_vector(config, y: np.ndarray) -> Tensor:
+def _convert_y_vector(y: np.ndarray) -> Tensor:
     r""" Configures y vector for the learner """
     base_set = (APU_Dataset.A9A, APU_Dataset.BANANA, APU_Dataset.IJCNN1, APU_Dataset.SUSY)
     if config.DATASET in base_set:

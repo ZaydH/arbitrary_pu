@@ -1,0 +1,60 @@
+---
+  dataset: "spam"
+  train_prior: 0.5
+  test_prior: 0.5
+  # MNIST class definitions and bias vectors
+  pos_train_classes: [1]
+  pos_test_classes:  [1]
+  neg_classes:       [-1]
+  # Learner parameters
+  use_abs: True
+  num_sigma_layers: 0
+  num_ff_layers: 1
+  num_epoch: 200
+  sigma_batch_size: 1000
+  batch_size: 1000
+  pn_train_batch_size: 1000
+  pn_test_batch_size: 1000
+  # Dataset sizes
+  n_p: 600           # Number of positive (labeled)
+  n_u_train: 1500    # Number of unlabeled (train) samples
+  n_u_test: 1500     # Number of unlabeled (test) samples
+  n_test: 1000       # Number of test samples for inductive verification
+  # General optimizer parameters
+  learning_rate: 1E-3
+  weight_decay: 1E-1
+  gamma: 1.
+  validation_split_ratio: 0.16666667
+  # PUc parameters
+  kernel_type: "gaussian"
+---
+  WUU:
+    weight_decay: 1E-2
+    learning_rate: 1E-3
+    gamma: 0.5
+---
+  PURR:
+    weight_decay: 1E-2
+    learning_rate: 1E-3
+    gamma: 1.
+---
+  aPNU:
+    weight_decay: 1E-3
+    learning_rate: 1E-3
+    gamma: 0.5
+---
+  nnPU_all:
+    weight_decay: 1E-2
+    learning_rate: 1E-3
+    gamma: 0.1
+  nnPU_te:
+    weight_decay: 1E-2
+    learning_rate: 1E-3
+    gamma: 0.1
+---
+  te_pn:
+    weight_decay: 1E-2
+    learning_rate: 1E-3
+  tr_pn:
+    weight_decay: 1E-2
+    learning_rate: 1E-4

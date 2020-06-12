@@ -7,6 +7,7 @@
   pos_test_classes:  [8, 9]
   neg_classes:       [3, 4]
   # Learner parameters
+  use_abs: True
   num_sigma_layers: 1
   num_ff_layers: 3
   num_epoch: 200
@@ -28,9 +29,9 @@
   kernel_type: "gaussian"
 ---
   WUU:
-    weight_decay: 1E-2
-    learning_rate: 1E-3
-    gamma: 0.1
+    weight_decay: 5E-3
+    learning_rate: 1E-4
+    gamma: 1.
 ---
   PURR:
     weight_decay: 1E-3

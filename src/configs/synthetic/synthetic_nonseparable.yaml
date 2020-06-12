@@ -12,6 +12,7 @@
     - ["POS_TE",   -2,  -1,  1]
     - ["POS_TE",   -2,   1,  1]
   # Learner parameters
+  use_abs: True
   num_epoch: 100
   sigma_batch_size: 750
   batch_size: 2000

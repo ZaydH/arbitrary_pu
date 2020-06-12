@@ -7,6 +7,7 @@
   pos_test_classes:  [1, 0]
   neg_classes: [8, 9]
   # Learner parameters
+  use_abs: True
   num_sigma_layers: 1
   num_ff_layers: 2
   num_epoch: 200

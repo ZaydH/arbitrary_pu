@@ -9,6 +9,7 @@ import torch.nn as nn
 
 from . import utils as ds_tools
 from .types import Centroid, Labels, APU_Module, TensorGroup
+from .. import _config as config
 
 MAX_EPS = 1E-4  # Maximum difference allowed in probability vector
 
@@ -76,29 +77,32 @@ def _generate_single_ds(prior: float, num_sample: int, p_cents: Set[Centroid], p
     return out[0], out[1]
 
 
-def generate_data(config) -> TensorGroup:
+def generate_data() -> TensorGroup:
     r""" Generates the training (including unlabeled) and test data """
     n_cents = {x for x in config.CENTROIDS if x.label == Labels.Synthetic.NEG}
-    n_tr_bias = ds_tools.construct_bias_vec(config, n_cents, "neg_train_bias")
-    n_te_bias = ds_tools.construct_bias_vec(config, n_cents, "neg_test_bias")
+    n_tr_bias = ds_tools.construct_bias_vec(n_cents, "neg_train_bias")
+    n_te_bias = ds_tools.construct_bias_vec(n_cents, "neg_test_bias")
 
     tr_pos = {Labels.Synthetic.POS_TR.value, Labels.Synthetic.POS_BOTH.value}
     p_tr_cents = {x for x in config.CENTROIDS if x.label.value in tr_pos}
-    p_tr_bias = ds_tools.construct_bias_vec(config, p_tr_cents, "pos_train_bias")
+    p_tr_bias = ds_tools.construct_bias_vec(p_tr_cents, "pos_train_bias")
 
     te_pos = {Labels.Synthetic.POS_TE.value, Labels.Synthetic.POS_BOTH.value}
     p_te_cents = {x for x in config.CENTROIDS if x.label.value in te_pos}
-    p_te_bias = ds_tools.construct_bias_vec(config, p_te_cents, "pos_test_bias")
+    p_te_bias = ds_tools.construct_bias_vec(p_te_cents, "pos_test_bias")
 
-    ts_grp = TensorGroup()
+    tg = TensorGroup()
     if config.TRAIN_PRIOR > 0:
-        ts_grp.p_x, _ = _generate_single_ds(1., config.N_P, p_tr_cents, p_tr_bias, None, None)
-    ts_grp.u_tr_x, ts_grp.u_tr_y = _generate_single_ds(config.TRAIN_PRIOR, config.N_U_TRAIN,
-                                                       p_tr_cents, p_tr_bias, n_cents, n_tr_bias)
-    ts_grp.u_te_x, ts_grp.u_te_y = _generate_single_ds(config.TEST_PRIOR, config.N_U_TEST,
-                                                       p_te_cents, p_te_bias, n_cents, n_te_bias)
-    # For inductive testing
-    ts_grp.test_x, ts_grp.test_y = _generate_single_ds(config.TEST_PRIOR, config.N_TEST,
-                                                       p_te_cents, p_te_bias, n_cents, n_te_bias)
+        tg.p_x, _ = _generate_single_ds(1., config.N_P, p_tr_cents, p_tr_bias, None, None)
+    tg.u_tr_x, tg.u_tr_y = _generate_single_ds(config.TRAIN_PRIOR, config.N_U_TRAIN,
+                                               p_tr_cents, p_tr_bias, n_cents, n_tr_bias)
+    tg.test_x_tr, tg.test_y_tr = _generate_single_ds(config.TRAIN_PRIOR, config.N_TEST,
+                                                     p_tr_cents, p_tr_bias, n_cents, n_tr_bias)
 
-    return ts_grp
+    tg.u_te_x, tg.u_te_y = _generate_single_ds(config.TEST_PRIOR, config.N_U_TEST,
+                                               p_te_cents, p_te_bias, n_cents, n_te_bias)
+    # For inductive testing
+    tg.test_x, tg.test_y = _generate_single_ds(config.TEST_PRIOR, config.N_TEST,
+                                               p_te_cents, p_te_bias, n_cents, n_te_bias)
+
+    return tg

@@ -79,12 +79,6 @@ class PN(RiskEstimator):
 
 
 class PURR(RiskEstimator):
-    class Config:
-        GAMMA = 1
-        BETA = 0
-
-        TAU = 0.5
-
     class Loss:
         r""" Encapsulates the loss calculated by the loss and the accompanying fields """
         def __init__(self):
@@ -106,14 +100,15 @@ class PURR(RiskEstimator):
 
     def __init__(self, train_prior: float, test_prior: float,
                  train_loss: Callable, valid_loss: Callable, gamma: float = 1.,
-                 use_nn: OptBool = True):
+                 use_nn: OptBool = True, abs_nn: bool = False):
+        assert not abs_nn or use_nn, "Cannot use absolute NN with NN disabled"
         super().__init__(train_loss, valid_loss)
 
         self._tr_prior, self._te_prior = train_prior, test_prior
 
         self._pr_ratio = (1 - self._te_prior) / (1 - self._tr_prior)
 
-        self._use_nn = use_nn
+        self._use_nn, self._abs_nn = use_nn, abs_nn
         self.gamma = gamma
 
     def _loss(self, dec_scores: Tensor, lbls: Tensor, _: Tensor, f_loss: Callable) -> "PURR.Loss":
@@ -122,7 +117,9 @@ class PURR(RiskEstimator):
         u_te_mask = lbls == Labels.Training.U_TEST.value
         u_tr_mask = lbls == Labels.Training.U_TRAIN.value
 
+        # noinspection PyUnresolvedReferences
         assert bool((p_mask | u_te_mask | u_tr_mask).all()), "Unknown labels"
+        # noinspection PyUnresolvedReferences
         assert bool((p_mask ^ u_te_mask ^ u_tr_mask).all()), "Overlapping labels"
 
         has_p = self._has_any(p_mask)
@@ -136,8 +133,9 @@ class PURR(RiskEstimator):
 
         def _calc_tr_lbl_risk(lbl_rsk_all: Tensor) -> Tensor:
             r""" Calculates the labelled risk of the TRAINING set"""
-            return self._pr_ratio * (_get_mean_loss(lbl_rsk_all, u_tr_mask, has_u_tr)
-                                     - self._tr_prior * _get_mean_loss(lbl_rsk_all, p_mask, has_p))
+            _loss = self._pr_ratio * (_get_mean_loss(lbl_rsk_all, u_tr_mask, has_u_tr)
+                                      - self._tr_prior * _get_mean_loss(lbl_rsk_all, p_mask, has_p))
+            return _loss.abs() if self._abs_nn else _loss
 
         loss.r_n_plus = _calc_tr_lbl_risk(plus_lbl_rsk)
         loss.r_n_minus = _calc_tr_lbl_risk(minus_lbl_rsk)
@@ -148,12 +146,20 @@ class PURR(RiskEstimator):
             loss.te_loss = loss.grad_var = loss.r_te_p_plus + loss.r_n_minus
         else:
             loss.r_te_p_plus = r_te_u_plus - loss.r_n_plus.clamp_min(0)
+            if self._abs_nn:
+                loss.r_te_p_plus = loss.r_te_p_plus.abs()
+
             loss.te_loss = loss.r_te_p_plus.clamp_min(0) + loss.r_n_minus.clamp_min(0)
-            if loss.r_n_minus < 0:
+            if self._abs_nn:
+                loss.grad_var = loss.te_loss
+            elif loss.is_n_minus_invalid():
+                assert not self._abs_nn, "Absolute NN cannot be negative"
                 loss.grad_var = -self.gamma * loss.r_n_minus
-            elif loss.r_n_plus < 0:
+            elif loss.is_n_plus_invalid():
+                assert not self._abs_nn, "Absolute NN cannot be negative"
                 loss.grad_var = -self.gamma * loss.r_n_plus
-            elif loss.r_te_p_plus < 0:
+            elif loss.is_te_p_plus_invalid():
+                assert not self._abs_nn, "Absolute NN cannot be negative"
                 loss.grad_var = -self.gamma * loss.r_te_p_plus
             else:
                 loss.grad_var = loss.te_loss
@@ -161,10 +167,13 @@ class PURR(RiskEstimator):
 
     def name(self) -> str:
         r""" Name of the loss function """
-        base_name = f"PURR_tr{self._tr_prior:.2}_te{self._te_prior:.2}".replace(".", "_")
-        if self.is_nn:
-            return base_name
-        return f"uncorrected_{base_name}"
+        fields = ["PURR", f"tr{self._tr_prior:.2}".replace(".", "_"),
+                  f"te{self._te_prior:.2}".replace(".", "_")]
+        if self._abs_nn:
+            fields.append("abs")
+        if not self.is_nn:
+            fields = ["uncorrected"] + fields
+        return "_".join(fields)
 
     @property
     def is_nn(self) -> bool:
@@ -173,7 +182,7 @@ class PURR(RiskEstimator):
 
 
 def _get_mean_loss(l_tensor: Tensor, mask: Tensor, has_any: bool) -> Tensor:
-    r""" yGets the mean loss for the specified \p mask. If the mask is empty, return 0 """
+    r""" Gets the mean loss for the specified \p mask. If the mask is empty, return 0 """
     if not has_any:
         return torch.zeros((), device=TORCH_DEVICE)
     return l_tensor[mask].mean().squeeze()

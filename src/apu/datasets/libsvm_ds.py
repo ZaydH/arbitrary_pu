@@ -11,36 +11,31 @@ from scipy.sparse import csr_matrix
 import torch
 from torch import Tensor
 
+from .. import _config as config
 from .types import TensorGroup
 from .utils import build_puc_style_dataset, download_file
 
 BASE_URL = "https://www.csie.ntu.edu.tw/~cjlin/libsvmtools/datasets/"
 
 
-def load_data(config, dest: Union[Path, str]) -> TensorGroup:
+def load_data(dest: Union[Path, str]) -> TensorGroup:
     r""" Constructs the dataset objects """
     ds = config.DATASET.value
     all_x, all_y = [], []
     for url in (ds.train_url, ds.test_url):
         if url is None:
             continue
-        download_path = _build_download_path(config, dest, Path(url))
-
-        url = "".join([BASE_URL, url])  # Base URL appended to front of url
-        download_file(url, download_path)
-        file_path = _decompress(download_path)
-
-        x, y = _get_tensor(file_path)
+        x, y = _get_tensor(dest=dest, url=url)
         all_x.append(x)
         all_y.append(y)
 
     # Combine train and if applicable test
     x, y = torch.cat(all_x, dim=0), torch.cat(all_y, dim=0)
     assert x.shape[1] == ds.dim[0], "Unexpected X feature dimension"
-    return build_puc_style_dataset(config, x, y)
+    return build_puc_style_dataset(x, y)
 
 
-def _build_download_path(config, dest_dir: Path, url: Path) -> Path:
+def _build_download_path(dest_dir: Path, url: Path) -> Path:
     r""" Download path to write the downloaded file """
     dir_pth = dest_dir / config.DATASET.name.lower()
     dir_pth.mkdir(exist_ok=True, parents=True)
@@ -66,7 +61,7 @@ def _build_tensor_path(uncompressed_path: Path) -> Path:
 
 def _is_compressed(file_path: Path) -> bool:
     r""" Returns \p True if file path is a compressed file """
-    return file_path.suffix in (".bz2",)
+    return file_path.suffix in [".bz2"]
 
 
 def _decompress(file_path: Path) -> Path:
@@ -88,12 +83,19 @@ def _decompress(file_path: Path) -> Path:
     return file_path
 
 
-def _get_tensor(file_path: Path) -> Tuple[Tensor, Tensor]:
+def _get_tensor(dest: Path, url: str) -> Tuple[Tensor, Tensor]:
     r""" Constructs a tensor from the LibSVM file """
-    tensor_path = _build_tensor_path(file_path)
+    download_path = _build_download_path(dest, Path(url))
+    tensor_path = _build_tensor_path(download_path)
     if tensor_path.exists():
         logging.info(f"Tensor file \"{tensor_path}\" already exists. Skipping...")
     else:
+        url = "".join([BASE_URL, url])  # Base URL appended to front of url
+        download_file(url, download_path)
+
+        file_path = _decompress(download_path)
+        assert file_path == download_path, "Mismatch of file and download path"
+
         msg = f"Creating tensor file \"{tensor_path}\" from \"{file_path}\""
         logging.info(f"Starting: {msg}...")
         x, y = sklearn.datasets.load_svmlight_file(str(file_path))

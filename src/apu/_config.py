@@ -11,7 +11,9 @@ __all__ = ["BATCH_SIZE", "CALIBRATION_SPLIT_RATIO",
            "POS_TEST_BIAS", "POS_TEST_CLASSES",
            "POS_TRAIN_BIAS", "POS_TRAIN_CLASSES",
            "SIGMA_BATCH_SIZE",
-           "TEST_PRIOR", "TRAIN_PRIOR", "VALIDATION_SPLIT_RATIO",
+           "TEST_PRIOR", "TRAIN_PRIOR",
+           "USE_ABS",
+           "VALIDATION_SPLIT_RATIO",
            # "WEIGHT_DECAY",
            "parse", "print_configuration",
            "set_gamma", "set_layer_counts", "set_learning_rate",
@@ -30,6 +32,9 @@ from ruamel.yaml import YAML
 from .datasets.types import Centroid, NewsgroupCategory, APU_Dataset
 from .types import LearnerParams, PathOrStr
 from .utils import NEWSGROUPS_DIR
+
+USE_ABS = True
+ABS_KEY = "use_abs"
 
 DATASET = None  # type: Optional[APU_Dataset]
 DATASET_KEY = "dataset"
@@ -76,7 +81,7 @@ WEIGHT_DECAY = 1E-4
 GAMMA = 0
 
 # Fraction of training samples used for
-VALIDATION_SPLIT_RATIO = 0.2
+VALIDATION_SPLIT_RATIO = 1 / 6
 CALIBRATION_SPLIT_RATIO = None
 
 # ===  Start PUc only fields here
@@ -117,6 +122,8 @@ def _parse_general_settings(config) -> None:
                 module_dict[key.upper()] = APU_Dataset[ds_name]
             except KeyError:
                 raise ValueError(f"Unknown dataset {ds_name}")
+        elif key.lower() == ABS_KEY:
+            module_dict[key.upper()] = bool(val)
         elif _is_invalid_neg_bias_key(key):
             raise ValueError(f"{key.upper()} is an invalid key for a configuration file")
         # Removed to allow string class names for 20 newsgroups
@@ -179,7 +186,8 @@ def get_learner_val(learner_name: str, param: LearnerParams.Attribute) -> Union[
             split_str = name.split("_")
             if split_str[0] == name:
                 break
-            name = split_str[0]
+            # name = split_str[0]
+            name = "_".join(split_str[:-1])
 
     # Get the general key value
     key = param.name.upper()
@@ -313,10 +321,10 @@ def _verify_configuration(module_dict: dict):
         assert all(bias is None for bias in bias_vec), "Bias vector not supported for SYNTHETIC"
     else:
         # noinspection PyTypeChecker
-        if NUM_SIGMA_LAYERS is None or NUM_SIGMA_LAYERS < 1:
+        if NUM_SIGMA_LAYERS is None or NUM_SIGMA_LAYERS < 0:
             raise ValueError("Number of sigma learner layers must be non-negative")
         # noinspection PyTypeChecker
-        if NUM_FF_LAYERS is None or NUM_FF_LAYERS < 1:
+        if NUM_FF_LAYERS is None or NUM_FF_LAYERS < 0:
             raise ValueError("Number of FF layers must be non-negative")
 
         if CENTROIDS is not None:
@@ -464,7 +472,9 @@ def set_neg_train_bias(new_bias: List[float]) -> None:
     # noinspection PyTypeChecker
     _verify_new_bias(NEG_CLASSES, new_bias)
 
-    if DATASET is None or DATASET.is_openml() or DATASET == APU_Dataset.EPSILON:
+    if DATASET is None:
+        raise ValueError(f"Dataset appears to be unset")
+    if DATASET.is_openml() or DATASET.is_libsvm():
         raise ValueError(f"Dataset \"{DATASET.name}\" does not support negative train bias")
 
     global NEG_TRAIN_BIAS
@@ -487,6 +497,16 @@ def set_gamma(gamma: float) -> None:
     r""" Set the DEFAULT gamma value """
     global GAMMA
     GAMMA = gamma
+
+
+def set_priors(tr_prior: float, te_prior: float):
+    for prior, name in ((tr_prior, "train"), (te_prior, "test")):
+        assert 0 < prior < 1, f"Invalid {name} prior"
+
+    global TRAIN_PRIOR
+    TRAIN_PRIOR = tr_prior
+    global TEST_PRIOR
+    TEST_PRIOR = te_prior
 
 
 def _verify_new_bias(cls_list: List[Union[int, str]], new_bias: List[float]):

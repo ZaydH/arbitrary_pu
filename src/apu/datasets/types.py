@@ -1,10 +1,13 @@
-__all__ = ["Centroid",
+__all__ = ["APU_Dataset", "APU_Module",
+           "BaseFFModule",
+           "Centroid",
+           "CnnModule",
            "Labels",
            "LibsvmParams",
-           "BaseFFModule",
            "NewsgroupCategory", "NewsgroupCategoryInfo",
            "OpenMLParams",
-           "APU_Dataset", "APU_Module", "TensorGroup",
+           "SpamFFModule",
+           "TensorGroup",
            "ViewTo1D"]
 
 from collections import namedtuple, Counter
@@ -151,6 +154,7 @@ class Labels:
     class Training(Enum):
         r""" Labels used during training """
         POS = 1
+        NEG = -2  # ToDo Remove
         U_TRAIN = 0
         U_TEST = -1
 
@@ -164,6 +168,7 @@ class Labels:
 
 CIFAR_DIM = [1024]
 MNIST_DIM = [1, 28, 28]
+NEWSGROUPS_DIM = [9216]
 
 
 # noinspection PyPep8Naming
@@ -200,10 +205,12 @@ class APU_Dataset(Enum):
     KMNIST = DatasetParams("KMNIST", MNIST_DIM)
     MNIST = DatasetParams("MNIST", MNIST_DIM)
 
-    NEWSGROUPS = DatasetParams("20 Newsgroups", [9216])
+    NEWSGROUPS = DatasetParams("20 Newsgroups", NEWSGROUPS_DIM)
 
     PHISHING = LibsvmParams(dim=[68],
                             train_url="binary/phishing")
+
+    SPAM = DatasetParams("spam", NEWSGROUPS_DIM)
 
     SUSY = LibsvmParams(dim=[18],
                         train_url="binary/SUSY.bz2",
@@ -217,30 +224,34 @@ class APU_Dataset(Enum):
                        test_url="binary/w8a.t",
                        num_test=14951)
 
-    def is_mnist_variant(self) -> bool:
-        r""" Returns \p True if dataset is MNIST or one of its variants """
-        all_mnist = (APU_Dataset.FASHION_MNIST, APU_Dataset.KMNIST, APU_Dataset.MNIST)
-        return any(self == x for x in all_mnist)
-
     def is_cifar(self) -> bool:
         r""" Returns \p True if dataset is a CIFAR dataset """
-        return self == APU_Dataset.CIFAR10
+        return self == self.CIFAR10
 
-    def is_synthetic(self) -> bool:
-        r""" Return \p True if the dataset is SYNTHETIC """
-        return self == APU_Dataset.SYNTHETIC
+    def is_libsvm(self) -> bool:
+        r""" Returns \p True if dataset from LibSVM """
+        return isinstance(self.value, LibsvmParams)
+
+    def is_mnist_variant(self) -> bool:
+        r""" Returns \p True if dataset is MNIST or one of its variants """
+        all_mnist = (self.FASHION_MNIST, self.KMNIST, self.MNIST)
+        return any(self == x for x in all_mnist)
 
     def is_newsgroups(self) -> bool:
         r""" Return \p True if the dataset 20 Newsgroups """
-        return self == APU_Dataset.NEWSGROUPS
+        return self == self.NEWSGROUPS
 
     def is_openml(self) -> bool:
         r""" Returns \p True if using an OpenML dataset """
         return isinstance(self.value, OpenMLParams)
 
-    def is_libsvm(self) -> bool:
-        r""" Returns \p True if dataset from LibSVM """
-        return isinstance(self.value, LibsvmParams)
+    def is_spam(self) -> bool:
+        r""" Returns \p True if using the SPAM dataset """
+        return self == self.SPAM
+
+    def is_synthetic(self) -> bool:
+        r""" Return \p True if the dataset is SYNTHETIC """
+        return self == self.SYNTHETIC
 
 
 # noinspection PyPep8Naming
@@ -292,18 +303,25 @@ class BaseFFModule(APU_Module):
         FF_HIDDEN_DIM = 300
         FF_ACTIVATION = nn.ReLU
 
-    def __init__(self, x: Tensor, num_hidden_layers: int):
+    def __init__(self, x: Tensor, num_hidden_layers: int, add_dropout: bool = False):
         super().__init__()
 
         self._model.add_module("View1D", ViewTo1D())
         in_dim = x[0].numel()
 
+        self.num_hidden_layers = num_hidden_layers
         self._ff = nn.Sequential()
-        for i in range(1, num_hidden_layers + 1):
+        # Special to prevent overfitting on spam dataset by reducing input features
+        if add_dropout:
+            self._ff.add_module(f"Input_Dropout", nn.Dropout(p=0.5))
+
+        for i in range(1, self.num_hidden_layers + 1):
             ff_block = nn.Sequential()
             ff_block.add_module(f"FF_Lin", nn.Linear(in_dim, self.Config.FF_HIDDEN_DIM))
-            ff_block.add_module(f"FF_BatchNorm", nn.BatchNorm1d(self.Config.FF_HIDDEN_DIM))
             ff_block.add_module(f"FF_Act", self.Config.FF_ACTIVATION())
+            ff_block.add_module(f"FF_BatchNorm", nn.BatchNorm1d(self.Config.FF_HIDDEN_DIM))
+            if add_dropout:
+                ff_block.add_module(f"FF_Dropout", nn.Dropout(p=0.5))
 
             self._ff.add_module(f"Hidden_Block_{i}", ff_block)
             in_dim = self.Config.FF_HIDDEN_DIM
@@ -311,6 +329,12 @@ class BaseFFModule(APU_Module):
         # Add output layer
         self._model.add_module("FF", self._ff)
         self._model.add_module("FF_Out", nn.Linear(in_dim, 1))
+
+
+class SpamFFModule(BaseFFModule):
+    r""" Feedforward module for spam with dropout """
+    def __init__(self, x: Tensor, num_hidden_layers: int):
+        super().__init__(x=x, num_hidden_layers=num_hidden_layers, add_dropout=True)
 
 
 @dataclass
@@ -330,6 +354,9 @@ class TensorGroup:
     # test has no sigma since sigma is a training only parameter
     test_x: Optional[Tensor] = None
     test_y: Optional[Tensor] = None
+    # Train test set
+    test_x_tr: Optional[Tensor] = None
+    test_y_tr: Optional[Tensor] = None
 
     def has_sigmas(self) -> bool:
         r""" Returns \p True if the \p TensorGroup has weights """
@@ -349,7 +376,8 @@ class TensorGroup:
         sigma_module.eval()
 
         # Iterate through each X vector and build the weights
-        for ds_name in ("p", "u_tr", "u_te"):
+        all_priors = (1., config.TRAIN_PRIOR, config.TEST_PRIOR)
+        for ds_name, prior in zip(("p", "u_tr", "u_te"), all_priors):
             x = self.__getattribute__(f"{ds_name}_x")
             assert x is not None, f"{ds_name}_x cannot be None"
 
@@ -359,7 +387,8 @@ class TensorGroup:
             all_sigma = []
             with torch.no_grad():
                 for xs, in dl:
-                    all_sigma.append(sigma_module.forward(xs))
+                    sig_vals = sigma_module.calc_cal_weights(xs, prior=prior)
+                    all_sigma.append(sig_vals)
 
             w = torch.cat(all_sigma).detach().cpu()
             if len(w.shape) > 1: w = w.squeeze(dim=1)
@@ -376,3 +405,62 @@ class TensorGroup:
     def reset_sigmas(self) -> None:
         r""" DEBUG ONLY.  Reset the sigmas back to None"""
         self.p_sigma = self.u_tr_sigma = self.u_te_sigma = None
+
+
+class CnnModule(APU_Module):
+    ACTIVATION = nn.ReLU
+
+    CONV_LAYER_FILTERS_OUT = (3 * [96]) + (5 * [192]) + (1 * [10])
+    CONV_LAYER_KERNEL_SIZES = (7 * [3]) + (2 * [1])
+    CONV_LAYER_STRIDE = (2 * [1]) + (1 * [2]) + (2 * [1]) + (1 * [2]) + (3 * [1])
+    CONV_LAYER_PAD_SIZE = (7 * [1]) + (2 * [0])
+
+    NUM_HIDDEN_FF_LAYER = 2
+    FF_HIDDEN_DIM = 1000
+
+    def __init__(self, x: Tensor):
+        if len(x.shape) != 4:
+            raise ValueError("Dimension of input x appears incorrect")
+        super().__init__()
+
+        # Verify the convolutional settings
+        self._num_conv_layers = len(self.CONV_LAYER_FILTERS_OUT)
+        self._verify_conv_sizes(x)
+
+        self._base_mod = nn.Sequential()
+        # Constructs the convolutional 2D
+        flds = (self.CONV_LAYER_FILTERS_OUT, self.CONV_LAYER_KERNEL_SIZES,
+                self.CONV_LAYER_STRIDE, self.CONV_LAYER_PAD_SIZE)
+        input_dim = x.shape[1]
+        for i, (out_dim, k_size, stride, pad) in enumerate(zip(*flds)):
+            conv_seq = nn.Sequential(nn.Conv2d(input_dim, out_dim, k_size, stride, pad),
+                                     self.ACTIVATION(),
+                                     nn.BatchNorm2d(out_dim))
+            self._base_mod.add_module("Conv2D_%02d" % i, conv_seq)
+            input_dim = out_dim
+        self._base_mod.add_module("Flatten", ViewTo1D())
+
+        # Find the size of the tensor input into the FF block
+        self._base_mod.eval()
+        x = x.cpu()  # Base module still on CPU at this point
+        with torch.no_grad():
+            ff_in = self._base_mod.forward(x).shape[1]
+        self._base_mod.train()
+        # Constructs the FF block
+        for i in range(1, self.NUM_HIDDEN_FF_LAYER + 1):
+            ff_seq = nn.Sequential(nn.Linear(ff_in, self.FF_HIDDEN_DIM),
+                                   self.ACTIVATION())
+            ff_in = self.FF_HIDDEN_DIM
+            self._base_mod.add_module("FF_%02d" % i, ff_seq)
+
+        self._model.add_module("Base Module", self._base_mod)
+        self._model.add_module("FF_Out", nn.Linear(ff_in, 1))
+
+    def _verify_conv_sizes(self, x: Tensor):
+        r""" Sanity check the dimensions of the input tensor and convolutional block """
+        assert len(x.shape) == 4, "X tensor should be 2D"
+
+        assert self._num_conv_layers == len(self.CONV_LAYER_FILTERS_OUT), "# Filters mismatch"
+        assert self._num_conv_layers == len(self.CONV_LAYER_KERNEL_SIZES), "# Kernels mismatch"
+        assert self._num_conv_layers == len(self.CONV_LAYER_STRIDE), "# strides mismatch"
+        assert self._num_conv_layers == len(self.CONV_LAYER_PAD_SIZE), "# paddings mismatch"

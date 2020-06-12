@@ -1,9 +1,12 @@
 from abc import ABC, abstractmethod
 import collections
 import datetime
+import logging
+import sys
 import time
 from typing import Iterable, List, Optional, Tuple
 
+# import lightgbm as lgb
 import numpy as np
 
 from fastai.basic_data import DeviceDataLoader
@@ -15,13 +18,17 @@ from torch.optim.adamw import AdamW
 from torch.utils.data import TensorDataset
 
 from apu import TrainingLogger, config
-from apu.datasets.types import Labels, TensorGroup
+from apu.datasets import synthetic
+from apu.datasets.types import BaseFFModule, Labels, TensorGroup
 # noinspection PyUnresolvedReferences
 from apu.loss import PN, PURR, log_loss, loss_0_1, ramp_loss, sigmoid_loss
-from apu.nnpu import APNU, WUU, NNPU
+from apu.nnpu import APNU, NNPU, WUU
 from apu.types import LearnerParams
 import apu.utils
 from apu.utils import ClassifierBlock, NUM_WORKERS, TORCH_DEVICE, shuffle_tensors
+
+from generate_results import calculate_results
+from puc_learner import PUcLearner
 
 SplitTensorInfo = collections.namedtuple("SplitTensorInfo", ["x", "y", "sigma"])
 
@@ -77,10 +84,12 @@ class _BaseLearner(nn.Module, ABC):
         for mod_name, module in modules.items():
             lr = config.get_learner_val(mod_name, LearnerParams.Attribute.LEARNING_RATE)
             wd = config.get_learner_val(mod_name, LearnerParams.Attribute.WEIGHT_DECAY)
-            if config.DATASET.is_synthetic():
+            is_lin_ff = config.DATASET.is_synthetic() or module.module.num_hidden_layers == 0
+            if is_lin_ff:
                 module.optim = LBFGS(module.parameters(), lr=lr)
             else:
                 module.optim = AdamW(module.parameters(), lr=lr, weight_decay=wd, amsgrad=True)
+            logging.debug(f"{mod_name} Optimizer: {module.optim.__class__.__name__}")
 
         for ep in range(1, config.NUM_EPOCH + 1):
             # noinspection PyUnresolvedReferences
@@ -106,10 +115,6 @@ class _BaseLearner(nn.Module, ABC):
 
 class CalibratedLearner(_BaseLearner):
     r""" Simple module used to represent a calibrated module """
-
-    # Number of bins used if learner's calibrated error is calculated
-    NUM_CAL_BINS = 20
-
     def __init__(self, prior: float, gamma: float, base_module: nn.Module):
         super().__init__(name="Calibrated_nnPU")
 
@@ -117,7 +122,7 @@ class CalibratedLearner(_BaseLearner):
         val_loss = log_loss
 
         nnpu = NNPU(prior=prior, gamma=gamma, train_loss=train_loss, valid_loss=val_loss,
-                    only_u_train=True)
+                    only_u_train=True, abs_nn=True)
 
         self._mod = ClassifierBlock(net=base_module, estimator=nnpu)
         self.block = self._mod.module
@@ -127,6 +132,8 @@ class CalibratedLearner(_BaseLearner):
 
         self._sigmoid = nn.Sigmoid()
         self._is_cal = torch.full((), False, dtype=torch.bool, device=TORCH_DEVICE)
+
+        self._prior = prior
         self.cal_err = None
 
         self.to(device=TORCH_DEVICE)
@@ -136,6 +143,7 @@ class CalibratedLearner(_BaseLearner):
         y = self._mod.forward(x)
         if self.is_calibrated():
             y = self._sigmoid.forward(y)
+            # y = (self.cal_err * y).clamp(0., 1.)
         return y
 
     def set_calibrated(self) -> None:
@@ -153,19 +161,106 @@ class CalibratedLearner(_BaseLearner):
             module.eval()
             for param in module.parameters():
                 param.requires_grad = False
-        self.set_calibrated()
+        # self.set_calibrated()
 
     def fit(self, tg: TensorGroup) -> None:
         r""" Fit all models """
         self._train_start = time.time()
 
+        size_p, p_in_u = tg.p_x.shape[0], self._prior * tg.u_tr_x.shape[0]
+        self.cal_err = (size_p + p_in_u) / size_p
+
         train_dl, valid_dl = create_pu_dataloaders(p_x=tg.p_x, u_x=tg.u_tr_x,
                                                    bs=config.SIGMA_BATCH_SIZE)
         self._fit(self._blocks, train_dl=train_dl, valid_dl=valid_dl)
 
-        # Mark calibrated and unfrozen
+        # Mark calibrated and frozen
         self.set_calibrated()
         self.freeze()
+
+    def calc_cal_weights(self, x: Tensor, prior: float) -> Tensor:
+        r"""
+        Calculate the calibrated weights.  Default is to use the non-traditional posterior.  For
+        the spam dataset, the Top-K approach is used.
+        """
+        if not config.DATASET.is_spam():
+            return self.forward(x)
+
+        assert 0 < prior <= 1, "Invalid prior"
+        assert self.is_calibrated(), "Module not calibrated"
+
+        n = x.shape[0]
+        expect_pos = int(prior * n)  # Expected number of positive examples
+
+        cal_vals = self._mod.forward(x)
+        vals, indices = cal_vals.topk(k=expect_pos)
+
+        probs = torch.zeros(n)
+        probs[indices] = 1
+        return probs
+
+
+class SklearnCalibrated(_BaseLearner):
+    r""" Simple module used to represent a calibrated module """
+    def __init__(self, prior: float, base, base_name: str):
+        super().__init__(name=f"Calibrated_Sk-{base_name}")
+
+        self._is_cal = False
+        self._base = base
+
+        self._prior = prior
+        self.cal_err = None
+
+    def forward(self, x: Tensor) -> Tensor:
+        r""" Passes through the calibrated module and if relevant adds the sigmoid function """
+        x = x.cpu().numpy()
+        try:
+            y = self._base.predict_proba(x)
+            # In case of two dimensional probability predictions take the second dimension
+            if y.shape[1] == 2:
+                y = y[:, 1]
+        except AttributeError:
+            y = self._base.predict(x)
+
+        y = torch.from_numpy(y).squeeze().to(TORCH_DEVICE)
+        # y = (y * self.cal_err).clamp(0., 1.)
+        return y
+
+    def set_calibrated(self) -> None:
+        r""" Mark the module as calibrated"""
+        self._is_cal = True
+
+    def is_calibrated(self) -> bool:
+        r""" Returns \p True if the module is calibrated """
+        return self._is_cal
+
+    def fit(self, tg: TensorGroup) -> None:
+        r""" Fit all models """
+        self._train_start = time.time()
+
+        size_p, p_in_u = tg.p_x.shape[0], self._prior * tg.u_tr_x.shape[0]
+        self.cal_err = (size_p + p_in_u) / size_p
+
+        msg = "Fitting Sklearn probabilistic classifier"
+        logging.debug(f"Starting: {msg}")
+        x = torch.cat((tg.p_x.cpu(), tg.u_tr_x.cpu()), dim=0).float().numpy()
+        y = torch.cat((torch.full([tg.p_x.shape[0]], fill_value=Labels.POS),
+                       torch.full([tg.u_tr_x.shape[0]], fill_value=Labels.NEG)),
+                      dim=0).int().squeeze().numpy()
+
+        self._base.fit(x, y)
+
+        # Mark calibrated and unfrozen
+        self.set_calibrated()
+        logging.debug(f"COMPLETED: {msg}")
+
+    def freeze(self):
+        r""" No effect of freeze.  Added for common API """
+        pass
+
+    @staticmethod
+    def _restore_best_model(modules: nn.ModuleDict):
+        assert False, "Restore not supported"
 
 
 # noinspection PyPep8Naming
@@ -175,8 +270,7 @@ class APU_Learner(_BaseLearner):
     and PN (test and train) risk estimators.
     """
     def __init__(self, base_module: nn.Module, sigma: Optional[CalibratedLearner] = None,
-                 rho_vals: Optional[Iterable] = np.linspace(start=0.0, stop=1.0, num=11),
-                 bias_priors: bool = False):
+                 rho_vals: Optional[Iterable] = np.linspace(start=0.0, stop=1.0, num=11)):
         super().__init__("aPU")
 
         # train_loss = log_loss
@@ -187,49 +281,38 @@ class APU_Learner(_BaseLearner):
 
         self._pu_blocks = nn.ModuleDict()
 
-        tr_priors, te_priors = [config.TRAIN_PRIOR], [config.TEST_PRIOR]
-        if bias_priors:
-            biases = [0.8, 1.2]
-            tr_priors.extend([bias * config.TRAIN_PRIOR for bias in biases])
-            te_priors.extend([bias * config.TEST_PRIOR for bias in biases])
-
         self._sigma = sigma
         if self._sigma is not None:
             if not self._sigma.is_calibrated():
                 raise ValueError("Sigma method is not calibrated")
             self._sigma.freeze()
-            for tr_prior in tr_priors:
-                for te_prior in te_priors:
-                    wuu = WUU(train_prior=tr_prior, test_prior=te_prior,
-                              u_tr_label=Labels.Training.U_TRAIN.value,
-                              u_te_label=Labels.Training.U_TEST.value,
-                              train_loss=train_loss, valid_loss=valid_loss)
+            wuu = WUU(train_prior=config.TRAIN_PRIOR, test_prior=config.TEST_PRIOR,
+                      u_tr_label=Labels.Training.U_TRAIN.value,
+                      u_te_label=Labels.Training.U_TEST.value,
+                      train_loss=train_loss, valid_loss=valid_loss, abs_nn=config.USE_ABS)
 
-                    wuu.gamma = config.get_learner_val(wuu.name(), LearnerParams.Attribute.GAMMA)
-                    self._pu_blocks[wuu.name()] = apu.utils.ClassifierBlock(base_module, wuu)
+            wuu.gamma = config.get_learner_val(wuu.name(), LearnerParams.Attribute.GAMMA)
+            self._pu_blocks[wuu.name()] = apu.utils.ClassifierBlock(base_module, wuu)
 
         # Construct the PURR learners
-        for tr_prior in tr_priors:
-            for te_prior in te_priors:
-                l_purr = PURR(train_prior=tr_prior, test_prior=te_prior,
-                              train_loss=train_loss, valid_loss=valid_loss)
+        l_purr = PURR(train_prior=config.TRAIN_PRIOR, test_prior=config.TEST_PRIOR,
+                      train_loss=train_loss, valid_loss=valid_loss, abs_nn=config.USE_ABS)
 
-                l_purr.gamma = config.get_learner_val(l_purr.name(), LearnerParams.Attribute.GAMMA)
-                self._pu_blocks[l_purr.name()] = apu.utils.ClassifierBlock(base_module, l_purr)
+        l_purr.gamma = config.get_learner_val(l_purr.name(),
+                                              LearnerParams.Attribute.GAMMA)
+        self._pu_blocks[l_purr.name()] = apu.utils.ClassifierBlock(base_module, l_purr)
 
         # Construct aPNU with varied values of rho
         if self._sigma is not None:
             for rho in rho_vals:
-                for tr_prior in tr_priors:
-                    for te_prior in te_priors:
-                        nn_pnu = APNU(train_prior=tr_prior, test_prior=te_prior,
-                                      rho=rho, train_loss=train_loss, valid_loss=valid_loss)
+                nn_pnu = APNU(train_prior=config.TRAIN_PRIOR, test_prior=config.TEST_PRIOR, rho=rho,
+                              train_loss=train_loss, valid_loss=valid_loss, abs_nn=config.USE_ABS)
 
-                        nn_pnu.gamma = config.get_learner_val(nn_pnu.name(),
-                                                              LearnerParams.Attribute.GAMMA)
-                        classifier = apu.utils.ClassifierBlock(base_module, nn_pnu)
+                nn_pnu.gamma = config.get_learner_val(nn_pnu.name(),
+                                                      LearnerParams.Attribute.GAMMA)
+                classifier = apu.utils.ClassifierBlock(base_module, nn_pnu)
 
-                        self._pu_blocks[nn_pnu.name()] = classifier
+                self._pu_blocks[nn_pnu.name()] = classifier
 
         # Construct the nnPU learners
         for i in range(2):
@@ -239,14 +322,14 @@ class APU_Learner(_BaseLearner):
                 tot_u_size = config.N_U_TRAIN + config.N_U_TEST
                 prior = num_unlabeled_pos / tot_u_size
 
-                only_u_train = only_u_test = False
+                only_u_test = False
             elif i == 1:
                 prior = config.TEST_PRIOR
-                only_u_train, only_u_test = False, True
+                only_u_test = True
             else:
                 raise ValueError("Unknown configuration")
             nnpu = NNPU(prior=prior, train_loss=train_loss, valid_loss=valid_loss,
-                        only_u_train=only_u_train, only_u_test=only_u_test)
+                        only_u_train=False, only_u_test=only_u_test)
             nnpu.gamma = config.get_learner_val(nnpu.name(), LearnerParams.Attribute.GAMMA)
             self._pu_blocks[nnpu.name()] = ClassifierBlock(base_module, nnpu)
 
@@ -420,6 +503,7 @@ def create_apu_dataloaders(ts_grp: TensorGroup, bs: int, inc_cal: bool = False) 
     return tuple(dls)
 
 
+# noinspection DuplicatedCode
 def create_pn_dataloaders(x: Tensor, y: Tensor, bs: int) \
         -> Tuple[DeviceDataLoader, DeviceDataLoader]:
     r"""
@@ -446,3 +530,47 @@ def create_pn_dataloaders(x: Tensor, y: Tensor, bs: int) \
                                        num_workers=NUM_WORKERS, device=TORCH_DEVICE)
 
     return train_dl, valid_dl
+
+
+def execute_test(tg: TensorGroup, module: nn.Module, bias_priors: bool = False,
+                 use_sklearn_cal: bool = False):
+    if use_sklearn_cal:
+        # base = lgb.LGBMClassifier()
+        msg = "LightGBM not supported. Hybrid classifiers may be supported in the future. Exiting"
+        logging.error(msg)
+        sys.exit(1)  # Consider restoring in a future version
+        # cal_learner = SklearnCalibrated(prior=config.TRAIN_PRIOR, base=base, base_name="LGBM")
+    else:
+        if config.DATASET.is_synthetic():
+            cal_module = synthetic.Module()
+        else:
+            cal_module = BaseFFModule(x=tg.p_x, num_hidden_layers=config.NUM_SIGMA_LAYERS)
+        cal_learner = CalibratedLearner(gamma=config.GAMMA, prior=config.TRAIN_PRIOR,
+                                        base_module=cal_module)
+    cal_learner.fit(tg)
+    if config.DATASET.is_synthetic():
+        apu.utils.log_decision_boundary(cal_learner.block, name="Sigma")
+
+    rho_vals = [0.5]  # if not config.DATASET.is_spam() else [0.5, 0.75, 0.9]
+    apu_learners = APU_Learner(base_module=module, sigma=cal_learner, rho_vals=rho_vals)
+    apu_learners.fit(tg)
+
+    priors = [config.TRAIN_PRIOR]
+    if bias_priors:
+        scalars = [0.8, 1.2]
+        priors.extend(scale * config.TRAIN_PRIOR for scale in scalars)
+
+    pucs = []
+    for prior in priors:
+        puc_learner = PUcLearner(prior=prior)
+        puc_learner.fit(tg)
+        pucs.append(puc_learner)
+
+    calculate_results(tg, apu_learners, pucs)
+
+    # if config.DATASET.is_synthetic():
+    #     stem = args.config_file.stem.replace("_", "-")
+    #     for name, block in apu_learners.blocks():
+    #         plot_path = apu.utils.PLOTS_DIR / f"{name.lower()}_centroids_{stem}.png"
+    #         apu.utils.plot_centroids(plot_path, tg,
+    #                                  decision_boundary=block.module.decision_boundary())

@@ -1,4 +1,4 @@
-__all__ = ["APNU", "WUU", "NNPU"]
+__all__ = ["_NNBase", "APNU", "NNPU", "WUU"]
 
 from abc import ABC
 from typing import Callable, Optional, Set, Union
@@ -18,7 +18,8 @@ class _NNBase(RiskEstimator, ABC):
         # GAMMA = 1
         BETA = 0
 
-    def __init__(self, gamma: float, train_loss: Callable, valid_loss: Optional[Callable] = None):
+    def __init__(self, gamma: float, train_loss: Callable, valid_loss: Optional[Callable] = None,
+                 abs_nn: bool = False):
         r"""
         :param gamma: Attenuates non-negative gradient
         :param train_loss: Loss function underlying the classifier
@@ -36,6 +37,7 @@ class _NNBase(RiskEstimator, ABC):
 
         self.gamma = gamma
         self.beta = self.Config.BETA
+        self._abs_nn = abs_nn
 
     @property
     def is_nn(self) -> bool:
@@ -62,6 +64,10 @@ class _NNBase(RiskEstimator, ABC):
         :param nn_risk: Risk term that cannot be negative.
         :return: Loss information with loss and gradient variables.
         """
+        if self._abs_nn:
+            loss = always_pos_risk + nn_risk.abs()
+            return LossInfo(te_loss=loss, grad_var=loss)
+
         min_clamp = -self.beta if self.is_nn else -np.inf
         loss = gradient_var = always_pos_risk + nn_risk.clamp_min(min_clamp)
         if self.is_nn and nn_risk < -self.beta:
@@ -75,7 +81,8 @@ class NNPU(_NNBase):
     def __init__(self, prior: float,
                  train_loss: Callable, valid_loss: Optional[Callable] = None,
                  only_u_train: bool = False, only_u_test: bool = False,
-                 gamma: float = 1.):
+                 gamma: float = 1., special_suffix: str = "",
+                 abs_nn: bool = False):
         r"""
         :param prior: Positive class prior probability, i.e., :math:`\Pr[y = +1]`
         :param gamma: Attenuates non-negative gradient
@@ -88,7 +95,8 @@ class NNPU(_NNBase):
         if only_u_train and only_u_test:
             raise ValueError("Cannot specify to use only train AND only test")
 
-        super().__init__(gamma=gamma, train_loss=train_loss, valid_loss=valid_loss)
+        super().__init__(gamma=gamma, train_loss=train_loss, valid_loss=valid_loss,
+                         abs_nn=abs_nn)
 
         if not (0 < prior < 1):
             raise ValueError("The class prior should be in (0, 1)")
@@ -97,19 +105,30 @@ class NNPU(_NNBase):
         self._only_u_train = only_u_train
         self._only_u_test = only_u_test
 
+        self._special_suffix = special_suffix
+
     def name(self) -> str:
         r""" Name of the loss.  Includes suffix for unlabeled set used """
         # return "nnPU" if self.is_nn else "uPU"
-        if self._only_u_train:
-            suffix = "tr"
-        elif self._only_u_test:
-            suffix = "te"
-        else:
-            suffix = "all"
-        return f"nnPU_{suffix}"
+        fields = ["nnPU", self._get_name_suffix()]
+        if self._special_suffix:
+            fields.append(self._special_suffix)
+        return "_".join(fields)
 
-    def _loss(self, dec_scores: Tensor, lbls: Tensor, _: Tensor,
-              f_loss: Callable) -> LossInfo:
+    def _get_name_suffix(self) -> str:
+        r""" Gets suffix name based on the configuration """
+        fields = []
+        if self._only_u_train:
+            fields.append("tr")
+        elif self._only_u_test:
+            fields.append("te")
+        else:
+            fields.append("all")
+        if self._abs_nn:
+            fields.append("abs")
+        return "_".join(fields)
+
+    def _loss(self, dec_scores: Tensor, lbls: Tensor, _: Tensor, f_loss: Callable) -> LossInfo:
         r"""
         nnPU uses separate approaches for determining the loss and variable used for calculating
         the gradient.
@@ -124,13 +143,9 @@ class NNPU(_NNBase):
         self._verify_loss_inputs(dec_scores, lbls)
 
         # Mask used to filter the dec_scores tensor and in loss calculations
-        p_mask = lbls == Labels.Training.POS.value
-        if self._only_u_train:
-            u_mask = lbls == Labels.Training.U_TRAIN.value
-        elif self._only_u_test:
-            u_mask = lbls == Labels.Training.U_TEST.value
-        else:
-            u_mask = ~p_mask
+        p_mask = self._build_mask(y=lbls, lbl_vals=Labels.Training.POS.value)
+        u_mask = self._build_u_mask(lbls=lbls)
+
         has_p, has_u = self._has_any(p_mask), self._has_any(u_mask)
 
         ones = torch.ones([dec_scores.shape[0]], device=TORCH_DEVICE)
@@ -147,12 +162,22 @@ class NNPU(_NNBase):
         # Different from wUU.  nnPU always does non-negativity correction on negative risk term
         return self._calc_loss_info(always_pos_risk=pos_risk, nn_risk=neg_risk)
 
+    def _build_u_mask(self, lbls: Tensor) -> Tensor:
+        r""" Builds the unlabeled set mask """
+        u_lbls = []
+        if not self._only_u_test:
+            u_lbls.append(Labels.Training.U_TRAIN.value)
+        if not self._only_u_train:
+            u_lbls.append(Labels.Training.U_TEST.value)
+        return self._build_mask(y=lbls, lbl_vals=u_lbls)
+
 
 class _WUBase(_NNBase, ABC):
     r""" Implements key methods and fields for the weighted unlabeled set"""
-    def __init__(self, gamma: float, train_prior: float, test_prior: float,
+    def __init__(self, gamma: float, train_prior: float, test_prior: float, abs_nn: bool,
                  train_loss: Callable, valid_loss: Optional[Callable] = None):
-        super().__init__(gamma=gamma, train_loss=train_loss, valid_loss=valid_loss)
+        super().__init__(gamma=gamma, train_loss=train_loss, valid_loss=valid_loss,
+                         abs_nn=abs_nn)
 
         # Sanity check the priors the store them
         assert 0 < train_prior < 1, "Invalid TRAINING prior"
@@ -209,9 +234,9 @@ class WUU(_WUBase):
     def __init__(self, train_prior: float, test_prior: float, u_tr_label: int,
                  u_te_label: Optional[Union[int, Set[int]]],
                  train_loss: Callable, valid_loss: Optional[Callable] = None,
-                 gamma: float = 1.):
+                 gamma: float = 1., abs_nn: bool = False):
         super().__init__(gamma=gamma, train_prior=train_prior, test_prior=test_prior,
-                         train_loss=train_loss, valid_loss=valid_loss)
+                         train_loss=train_loss, valid_loss=valid_loss, abs_nn=abs_nn)
 
         self._u_tr_labels = u_tr_label
         if isinstance(u_te_label, int):
@@ -220,7 +245,10 @@ class WUU(_WUBase):
 
     def name(self) -> str:
         r""" Name of the weighted negative-unlabeled learner """
-        return f"wUU_{self.get_prior_str()}"
+        fields = ["wUU", self.get_prior_str()]
+        if self._abs_nn:
+            fields.append("abs")
+        return "_".join(fields)
 
     def _loss(self, dec_scores: Tensor, lbls: Tensor, sigma_x: Tensor,
               f_loss: Callable) -> LossInfo:
@@ -265,7 +293,7 @@ class APNU(_WUBase):
 
     def __init__(self, train_prior: float, test_prior: float, rho: float,
                  train_loss: Callable, valid_loss: Optional[Callable] = None,
-                 gamma: float = 1.):
+                 gamma: float = 1., abs_nn: bool = False):
         r"""
         :param rho: Trade-off parameter between NU and PN losses
         :param gamma: Gamma learning rate attenuating parameter
@@ -274,14 +302,17 @@ class APNU(_WUBase):
                            \p train_loss for validation.
         """
         super().__init__(gamma=gamma, train_prior=train_prior, test_prior=test_prior,
-                         train_loss=train_loss, valid_loss=valid_loss)
+                         train_loss=train_loss, valid_loss=valid_loss, abs_nn=abs_nn)
         if not (0 <= rho <= 1):
             raise ValueError("rho must be in the range [0,1]")
         self.rho = rho
 
     def name(self) -> str:
         r""" Name of the non-negative PNU learner """
-        return f"aPNU_{self.rho:.2}_{self.get_prior_str()}".replace(".", "_")
+        fields = ["aPNU", f"{self.rho:.2}", self.get_prior_str()]
+        if self._abs_nn:
+            fields.append("abs")
+        return "_".join(fields).replace(".", "_")
 
     # noinspection DuplicatedCode
     def _loss(self, dec_scores: Tensor, lbls: Tensor, sigma_x: Tensor,

@@ -2,25 +2,38 @@ __all__ = ["binom_sample",
            "build_puc_style_dataset",
            "construct_bias_vec",
            "download_file",
+           "download_nltk_tokenizer",
+           "make_elmo_embedders",
            "shared_tensor_dataset_importer",
-           "shuffle_tensors"
+           "shuffle_tensors",
+           "use_elmo_to_process_doc"
            ]
 
 import logging
+import os
 from pathlib import Path
 import random
 import requests
 from typing import Collection, List, Optional, Set, Tuple, Union
 
+import nltk
+import nltk.tokenize
+import numpy as np
+
+from allennlp.commands.elmo import ElmoEmbedder
+from allennlp.common.file_utils import cached_path
 import torch
 from torch import Tensor
 import torch.distributions as distributions
 
+from .. import _config as config
 from .types import Labels, TensorGroup
 
 
 def binom_sample(prior: float, n: int) -> int:
     r""" Binomial distribution sample """
+    assert 0 <= prior <= 1., "Invalid prior"
+    assert n > 0, "Number of samples must be positive"
     binom = distributions.Binomial(n, torch.tensor([prior]))
     return int(binom.sample())
 
@@ -54,7 +67,7 @@ def shuffle_tensors(*args) -> Union[Tensor, Tuple[Tensor, ...]]:
     return tuple(shuffled)
 
 
-def shared_tensor_dataset_importer(config, dest: Union[Path, str],
+def shared_tensor_dataset_importer(dest: Union[Path, str],
                                    normalize_factor: Optional[int] = None,
                                    view_size: Optional[Union[int, Tuple[int, ...]]] = None) \
         -> TensorGroup:
@@ -84,21 +97,26 @@ def shared_tensor_dataset_importer(config, dest: Union[Path, str],
 
     ts_grp = TensorGroup()
     # Positive labeled set
-    p_tr_bias = construct_bias_vec(config, config.POS_TRAIN_CLASSES, "pos_train_bias")
+    p_tr_bias = construct_bias_vec(config.POS_TRAIN_CLASSES, "pos_train_bias")
     # noinspection PyTypeChecker
     ts_grp.p_x, _ = _build_group_tensor(*training, config.TRAIN_PRIOR, config.N_P,
                                         config.POS_TRAIN_CLASSES, p_tr_bias, None, None)
 
-    neg_tr_bias = construct_bias_vec(config, config.NEG_CLASSES, "neg_train_bias")
-    neg_te_bias = construct_bias_vec(config, config.NEG_CLASSES, "neg_test_bias")
+    neg_tr_bias = construct_bias_vec(config.NEG_CLASSES, "neg_train_bias")
+    neg_te_bias = construct_bias_vec(config.NEG_CLASSES, "neg_test_bias")
     # Unlabeled training distribution samples
     # noinspection PyTypeChecker
     ts_grp.u_tr_x, ts_grp.u_tr_y = _build_group_tensor(*training, config.TRAIN_PRIOR,
                                                        config.N_U_TRAIN,
                                                        config.POS_TRAIN_CLASSES, p_tr_bias,
                                                        config.NEG_CLASSES, neg_tr_bias)
+    # noinspection PyTypeChecker
+    ts_grp.test_x_tr, ts_grp.test_y_tr = _build_group_tensor(*training, config.TRAIN_PRIOR,
+                                                             min(config.N_U_TRAIN, config.N_TEST),
+                                                             config.POS_TRAIN_CLASSES, p_tr_bias,
+                                                             config.NEG_CLASSES, neg_tr_bias)
 
-    p_te_bias = construct_bias_vec(config, config.POS_TEST_CLASSES, "pos_test_bias")
+    p_te_bias = construct_bias_vec(config.POS_TEST_CLASSES, "pos_test_bias")
     # Unlabeled test (transductive) distribution samples
     # noinspection PyTypeChecker
     ts_grp.u_te_x, ts_grp.u_te_y = _build_group_tensor(*training, config.TEST_PRIOR,
@@ -186,7 +204,7 @@ def _get_tensor_subset(tensor: Tensor, idx: List[Set[int]], bias: Tensor,
     return tensor[idx]
 
 
-def construct_bias_vec(config, items: Collection, attr_name: Optional[str] = None) -> Tensor:
+def construct_bias_vec(items: Collection, attr_name: Optional[str] = None) -> Tensor:
     r""" Constructs a bias vector given an attribute name """
     attr_name = attr_name.upper()
 
@@ -198,18 +216,17 @@ def construct_bias_vec(config, items: Collection, attr_name: Optional[str] = Non
     return torch.as_tensor(bias_vec)
 
 
-def build_puc_style_dataset(config, x: Tensor, y: Tensor) -> TensorGroup:
+def build_puc_style_dataset(x: Tensor, y: Tensor) -> TensorGroup:
     r"""
     Build the \p TensorGroup object according to the definition in the PUc paper
 
-    :param config: Test configuration
     :param x: X feature data tensor
     :param y: Label information
     :return: Dataset tensor group
     """
     # Divide x into negative, biased positive (above/below) sets
     neg_x = _filter_tensor_by_labels(x, y, config.NEG_CLASSES)
-    pos_lt_med, pos_ge_med = _split_pos_values(config, x, y)
+    pos_lt_med, pos_ge_med = _split_pos_values(x, y)
 
     # Sanity check splits
     # ZSH -- Won't necessary have all classes in PUC due to 20 newsgroups
@@ -225,6 +242,10 @@ def build_puc_style_dataset(config, x: Tensor, y: Tensor) -> TensorGroup:
                                                 n_sample=config.N_U_TRAIN, is_test=False,
                                                 neg_x=neg_x, prior=config.TRAIN_PRIOR)
 
+    tg.test_x_tr, tg.test_y_tr = _build_output_tensor(pos_x_lt=pos_lt_med, pos_x_ge=pos_ge_med,
+                                                      n_sample=config.N_TEST, is_test=False,
+                                                      neg_x=neg_x, prior=config.TRAIN_PRIOR)
+
     tg.u_te_x, tg.u_te_y = _build_output_tensor(pos_x_lt=pos_lt_med, pos_x_ge=pos_ge_med,
                                                 n_sample=config.N_U_TEST, is_test=True,
                                                 neg_x=neg_x, prior=config.TEST_PRIOR)
@@ -233,7 +254,7 @@ def build_puc_style_dataset(config, x: Tensor, y: Tensor) -> TensorGroup:
                                                 n_sample=config.N_TEST, is_test=True,
                                                 neg_x=neg_x, prior=config.TEST_PRIOR)
 
-    _print_ds_info(config, y)
+    _print_ds_info(y)
     return tg
 
 
@@ -292,7 +313,7 @@ def _build_output_tensor(pos_x_lt: Tensor, pos_x_ge, n_sample: int, is_test: boo
     return shuffle_tensors(out_x, out_y)
 
 
-def _print_ds_info(config, y: Tensor) -> None:
+def _print_ds_info(y: Tensor) -> None:
     r""" Prints information about the dataset """
     ds_name = config.DATASET.name
 
@@ -318,11 +339,10 @@ def _filter_tensor_by_labels(x: Tensor, y: Tensor, lbls: List[int]) -> Tensor:
     return x[mask]  # Positive X
 
 
-def _split_pos_values(config, x: Tensor, y: Tensor) -> Tuple[Tensor, Tensor]:
+def _split_pos_values(x: Tensor, y: Tensor) -> Tuple[Tensor, Tensor]:
     r"""
     Splits the positive set according to the norm formula in the PUc formula
 
-    :param config: Test configuration
     :param x: Raw tensor values
     :param y: Labels for each element
     :return: Tuple of Tensors less than median and greater than median respectively
@@ -368,3 +388,51 @@ def download_file(url: str, file_path: Path) -> None:
     logging.info(f"COMPLETED: {msg}")
 
     assert file_path.exists(), "Specified file path does not exist"
+
+
+def download_nltk_tokenizer(newsgroups_dir: Path):
+    r""" NLTK uses 'punkt' tokenizer which needs to be downloaded """
+    # Download the nltk tokenizer
+    nltk_path = newsgroups_dir / "nltk"
+    nltk_path.mkdir(parents=True, exist_ok=True)
+    nltk.data.path.append(str(nltk_path))
+    nltk.download("punkt", download_dir=str(nltk_path))
+
+
+OPTION_FILE = "https://allennlp.s3.amazonaws.com/models/elmo/2x4096_512_2048cnn_2xhighway_5.5B" \
+              "/elmo_2x4096_512_2048cnn_2xhighway_5.5B_options.json"
+WEIGHT_FILE = "https://allennlp.s3.amazonaws.com/models/elmo/2x4096_512_2048cnn_2xhighway_5.5B" \
+              "/elmo_2x4096_512_2048cnn_2xhighway_5.5B_weights.hdf5"
+
+
+def make_elmo_embedders(data_dir: Path) -> List[ElmoEmbedder]:
+    r""" Make and return a simple ELMo embedder.  May need to download the ELMo weights first """
+    allennlp_dir = data_dir / "allennlp"
+    allennlp_dir.mkdir(parents=True, exist_ok=True)
+    os.putenv('ALLENNLP_CACHE_ROOT', str(allennlp_dir))
+
+    def _make_elmo(n_device: int) -> ElmoEmbedder:
+        # noinspection PyTypeChecker
+        return ElmoEmbedder(cached_path(OPTION_FILE, allennlp_dir),
+                            cached_path(WEIGHT_FILE, allennlp_dir), n_device)
+    elmos = []
+    if torch.cuda.is_available():
+        elmos.append(_make_elmo(n_device=0))
+    # CPU only
+    elmos.append(_make_elmo(n_device=-1))
+    return elmos
+
+
+def use_elmo_to_process_doc(elmos: List[ElmoEmbedder], document: str) -> np.ndarray:
+    r""" Use ELMo to process the document """
+    item = [nltk.tokenize.word_tokenize(document)]
+    with torch.no_grad():
+        try:
+            em = elmos[0].embed_batch(item)
+        except RuntimeError:
+            em = elmos[1].embed_batch(item)
+    em = np.concatenate(
+        [np.mean(em[0], axis=1).flatten(),
+         np.min(em[0], axis=1).flatten(),
+         np.max(em[0], axis=1).flatten()])
+    return em

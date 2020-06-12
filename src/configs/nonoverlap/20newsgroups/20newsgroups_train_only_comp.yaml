@@ -1,14 +1,15 @@
 ---
   dataset: "newsgroups"
-  train_prior: 0.37
+  train_prior: 0.56
   test_prior: 0.56
   # Newsgroup category and bias definitions
   pos_train_classes: ["comp"]
   pos_test_classes: ["alt", "comp", "misc", "rec"]
   neg_classes: ["sci", "soc", "talk"]
   # Learner parameters
+  use_abs: True
   num_sigma_layers: 1
-  num_ff_layers: 2
+  num_ff_layers: 1
   num_epoch: 200
   sigma_batch_size: 2500
   batch_size: 5000
@@ -33,7 +34,7 @@
     gamma: 0.5
 ---
   PURR:
-    weight_decay: 1E-3
+    weight_decay: 1E-4
     learning_rate: 1E-4
     gamma: 0.5
 ---

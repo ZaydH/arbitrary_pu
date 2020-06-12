@@ -16,10 +16,9 @@ import torch
 from torch import Tensor
 from torch.utils.data import TensorDataset
 
-from apu import config
+from apu import config, LearnerParams
 from apu.datasets.types import APU_Module, TensorGroup
 from apu.utils import RES_DIR, TORCH_DEVICE, construct_filename, log_decision_boundary
-from learner import LearnerParams, APU_Learner
 from puc_learner import PUcLearner
 
 
@@ -43,15 +42,13 @@ class LearnerResults:
     decision_m: float = None
     decision_b: float = None
 
-    ece: float = None
-    mce: float = None
-
     unlabel_train = None
+    tr_test = None
     unlabel_test = None
     test = None
 
 
-def calculate_results(tg: TensorGroup, our_learner: APU_Learner, puc_learners: List[PUcLearner],
+def calculate_results(tg: TensorGroup, our_learner, puc_learners: List[PUcLearner],
                       dest_dir: Optional[Union[Path, str]] = None,
                       exclude_puc: bool = False) -> dict:
     r"""
@@ -71,6 +68,7 @@ def calculate_results(tg: TensorGroup, our_learner: APU_Learner, puc_learners: L
 
     all_res = dict()
     ds_flds = (("unlabel_train", TensorDataset(tg.u_tr_x, tg.u_tr_y)),
+               ("tr_test", TensorDataset(tg.test_x_tr, tg.test_y_tr)),
                ("unlabel_test", TensorDataset(tg.u_te_x, tg.u_te_y)),
                ("test", TensorDataset(tg.test_x, tg.test_y)))
 
@@ -112,7 +110,7 @@ def calculate_results(tg: TensorGroup, our_learner: APU_Learner, puc_learners: L
     return all_res
 
 
-def _single_ds_results(block: Union[PUcLearner, APU_Module],
+def _single_ds_results(block: "Union[PUcLearner, APU_Module]",
                        ds_name: str, y: np.ndarray, y_hat: np.ndarray,
                        dec_scores: np.ndarray) -> LearnerResults.DatasetResult:
     r""" Logs and returns the results on a single dataset """
@@ -230,7 +228,7 @@ def _write_results_to_disk(dest_dir: Path, start_time: str, all_res: dict) -> No
             if i == 0: header.append(field_name)
             fields.append(_log_val(block_res.__getattribute__(field_name)))
 
-        for res_name in ("unlabel_train", "unlabel_test", "test"):
+        for res_name in ("unlabel_train", "tr_test", "unlabel_test", "test"):
             res_val = block_res.__getattribute__(res_name)
             for fld_name, fld_val in vars(res_val).items():
                 if i == 0: header.append(f"{res_name}-{fld_name}".replace("_", "-"))

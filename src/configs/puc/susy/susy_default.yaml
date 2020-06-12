@@ -7,6 +7,7 @@
   pos_test_classes: [1]
   neg_classes: [0]
   # Learner parameters
+  use_abs: True
   num_sigma_layers: 2
   num_ff_layers: 2
   num_epoch: 500
@@ -20,8 +21,8 @@
   n_u_test: 700     # Number of unlabeled (test) samples
   n_test: 2000      # Number of test samples for inductive verification
   # General optimizer parameters
-  learning_rate: 1E-3
-  weight_decay: 1E-4
+  learning_rate: 1E-4
+  weight_decay: 5E-3
   gamma: 1.
   validation_split_ratio: 0.16666667
   # PUc parameters
