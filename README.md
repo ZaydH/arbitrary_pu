@@ -3,9 +3,9 @@
 [![docs](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/ZaydH/arbitrary_pu/blob/master/LICENSE)
 
 **Authors**: [Zayd Hammoudeh](https://ZaydH.github.io) & [Daniel Lowd](https://ix.cs.uoregon.edu/~lowd/)  
-**Link**: [Arxiv](https://arxiv.org/abs/2002.10261)
+**Link**: [NeurIPS'20](https://nips.cc/Conferences/2020) (to appear)
 
-This repository contains the source code for reproducing the results in the paper "Learning from Positive and Unlabeled Data with Arbitrary Positive Shift"
+This repository contains the source code for reproducing the results in the paper "Learning from Positive and Unlabeled Data with Arbitrary Positive Shift" published at NeurIPS'20.
 
 ## Running the Program
 
@@ -23,7 +23,7 @@ These downloaded files are stored in a folder `.data` that is in the same direct
 
 ### Results
 
-Results are printed to the console. The tool also creates a folder named `res` in the same directory as `driver.py` where it exports results in CSV (comma separated value) format.  It includes results for all learners using metrics:
+Results are printed to the console. The tool also creates a folder named `res` in the same directory as `driver.py` where it exports results in CSV&nbsp;format.  It includes results for all learners using metrics:
 
 * Accuracy
 * AUROC
@@ -31,7 +31,7 @@ Results are printed to the console. The tool also creates a folder named `res` i
 
 ### Requirements
 
-Our implementation was tested in Python 3.6.5.  Minimum testing was performed with 3.7.1 but `requirements.txt` may need to change depending on your local Python configuration.  It uses the [PyTorch](https://pytorch.org/) neural network framework, version 1.3.1 and 1.4.  For the full requirements, see `requirements.txt` in the `src` directory.
+Our implementation was tested in Python&nbps;3.6.5.  Minimum testing was performed with&nbsp;3.7.1 but `requirements.txt` may need to change depending on your local Python configuration.  It uses the [PyTorch](https://pytorch.org/) neural network framework, version&nbsp;1.3.1 and&nbsp;1.4.  For the full requirements, see `requirements.txt` in the `src` directory.
 
 We recommend running our program in a [virtual environment](https://docs.python.org/3/tutorial/venv.html).  Once your virtual environment is created and *active*, run the following in the `src` directory:
 
@@ -42,11 +42,24 @@ pip install -r requirements.txt
 
 ### License
 
-[MIT](https://github.com/ZaydH/udl_arbitrary_pu/blob/master/LICENSE).
+[MIT](https://github.com/ZaydH/udl_arbitrary_pu/blob/master/LICENSE)
 
 ### Acknowledgements
 
-This repository includes an implementation of PUc [1] that was provided by the tool's author [Tomoya Sakai](https://t-sakai-kure.github.io/).
+This repository includes an implementation of PUc&nbsp;[1] that was provided by the tool's author [Tomoya Sakai](https://t-sakai-kure.github.io/).
+
+### Citation
+
+```
+@inproceedings{Hammoudeh:2020,
+    author = {Hammoudeh, Zayd and
+              Lowd, Daniel},
+    title = {Learning from Positive and Unlabeled Data with Arbitrary Positive Shift},
+    year = {2020},
+    booktitle = {Proceedings of the 34th Conference on Neural Information Processing Systems},
+    series = {{NeurIPS}’20}
+}
+```
 
 ## References
 

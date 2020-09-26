@@ -6,8 +6,8 @@ r"""
     Provides utilities to simplify and standardize logging in particular for training for training
     with \p torch.
 
-    :copyright: (c) 2019 by Zayd Hammoudeh.
-    :license: MIT, see LICENSE for more details.
+    :copyright: (c) 2020 by Zayd Hammoudeh.
+    :license: MIT, see LICENSE file for more details.
 """
 
 __all__ = ["TrainingLogger", "create_stdout_handler", "setup_logger"]
@@ -32,13 +32,15 @@ from typing import List, Optional, Any
 
 from tensorboardX import SummaryWriter
 import torch
-from torch import nn as nn, Tensor
+from torch import Tensor
 
 from . import utils
-from .types import ListOrInt, PathOrStr, OptDict, OptStr, OptInt, TorchOrNp
+from .types import ListOrInt, PathOrStr, OptDict, OptStr, TorchOrNp
 from .utils import log_seeds
 
 FORMAT_STR = '%(asctime)s -- %(levelname)s -- %(message)s'
+
+USE_TENSORBOARD = False
 
 
 class TrainingLogger:
@@ -56,7 +58,7 @@ class TrainingLogger:
     @classmethod
     def create_tensorboard(cls, file_path: PathOrStr, hparams: OptDict = None):
         r""" Creates the \p Tensorboard for logging """
-        if cls.has_tensorboard():
+        if not USE_TENSORBOARD or cls.has_tensorboard():
             # raise RuntimeError("Already has a tensorboard. Cannot recreate")
             return
 
@@ -71,11 +73,14 @@ class TrainingLogger:
                 tags = "/".join(["hyperparam", key])
                 cls.tb.add_text(tags, str(hparams[key]))
 
-    @classmethod
-    def add_graph(cls, model: nn.Module, x: Tensor):
-        r""" Add the computational graph to the \p Tensorboard """
-        cls._check_tensorboard_exists()
-        cls.tb.add_graph(model, x)
+    # @classmethod
+    # def add_graph(cls, model: nn.Module, x: Tensor):
+    #     r""" Add the computational graph to the \p Tensorboard """
+    #     if not USE_TENSORBOARD:
+    #         return
+    #
+    #     cls._check_tensorboard_exists()
+    #     cls.tb.add_graph(model, x)
 
     @classmethod
     def has_tensorboard(cls) -> bool:
@@ -98,7 +103,7 @@ class TrainingLogger:
         if fld_widths is None: fld_widths = len(fld_names) * [TrainingLogger.DEFAULT_WIDTH]
         if len(fld_widths) != len(fld_names):
             raise ValueError("Mismatch in the length of field names and widths")
-        if tb_grp_name and self.tb is None:
+        if USE_TENSORBOARD and tb_grp_name and self.tb is None:
             msg = "Tensorboard group name %s specified but no tensorboard created" % tb_grp_name
             raise ValueError(msg)
 
@@ -127,7 +132,7 @@ class TrainingLogger:
         r""" Log the list of values.  If it has been created, the tensorboard is also updated """
         if len(values) > self.num_fields:
             raise ValueError("More values to log than fields known by the logger")
-        if self.tb is not None:
+        if USE_TENSORBOARD and self.tb is not None:
             self._add_to_tensorboard(epoch, values)
 
         values = self._clean_values_list(values)
@@ -188,26 +193,31 @@ class TrainingLogger:
             new_vals.append(v)
         return new_vals
 
-    def add_figure(self, tag: str, fig, step: OptInt = None):
-        r""" Add a figure to the tensorboard """
-        self.tb.add_figure(tag, fig, global_step=step)
+    # def add_figure(self, tag: str, fig, step: OptInt = None):
+    #     r""" Add a figure to the tensorboard """
+    #     if USE_TENSORBOARD:
+    #         self.tb.add_figure(tag, fig, global_step=step)
 
-    def log_pr_curve(self, set_name: str, labels: TorchOrNp, dec_scores: TorchOrNp,
-                     epoch: OptInt = None) -> None:
-        r"""
-        Log the precision recall curve
-
-        :param set_name: Set name, e.g., "positive", "negative", "unlabeled", "test", etc.
-        :param labels: Label
-        :param dec_scores: Decision score value
-        :param epoch: Optional epoch number
-        """
-        self._check_tensorboard_exists()
-
-        name = "-".join([set_name, "conf-matrix"])
-        if self._grp_name:
-            name = "/".join([self._grp_name, name])
-        self.tb.add_pr_curve(name, labels, dec_scores, epoch)
+    # def log_pr_curve(self, set_name: str, labels: TorchOrNp, dec_scores: TorchOrNp,
+    #                  epoch: OptInt = None) -> None:
+    #     r"""
+    #     Log the precision recall curve
+    #
+    #     :param set_name: Set name, e.g., "positive", "negative", "unlabeled", "test", etc.
+    #     :param labels: Label
+    #     :param dec_scores: Decision score value
+    #     :param epoch: Optional epoch number
+    #     """
+    #     if not USE_TENSORBOARD:
+    #         return
+    #
+    #     self._check_tensorboard_exists()
+    #
+    #     name = "-".join([set_name, "conf-matrix"])
+    #     if self._grp_name:
+    #         name = "/".join([self._grp_name, name])
+    #
+    #     self.tb.add_pr_curve(name, labels, dec_scores, epoch)
 
     def log_confidence_matrix(self, epoch: int, set_name: str, con_mat: TorchOrNp) -> None:
         r"""
@@ -228,10 +238,11 @@ class TrainingLogger:
                 correct = "True" if row == col else "False"
                 label = "Positive" if col == 1 else "Negative"
                 conf_fields["_".join([correct, label])] = con_mat[row][col]
-        self.tb.add_scalars(name, conf_fields, epoch)
+        if USE_TENSORBOARD:
+            self.tb.add_scalars(name, conf_fields, epoch)
 
 
-def setup_logger(quiet_mode: bool, log_level: int = logging.DEBUG,
+def setup_logger(quiet_mode: bool, log_level: int = logging.INFO,
                  log_dir: Optional[PathOrStr] = None, job_id: Optional[ListOrInt] = None) -> None:
     r"""
     Logger Configurator

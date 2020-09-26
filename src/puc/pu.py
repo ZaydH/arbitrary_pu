@@ -1,5 +1,6 @@
 # python version is 3.6.1
 from enum import Enum
+import logging
 
 import numpy as np
 import scipy as sp
@@ -119,7 +120,7 @@ def sq_puc_tr_rulsif(xp_tr, xu_tr, xu_te, prior, lambda_list=np.logspace(-3, 0, 
     gamma = gamma_list[gamma_index]
     sigma = sigma_list[sigma_index]
     lam = lambda_list[lambda_index]
-    print("(gamma, sigma, lambda) = ({:.2f}, {:2f}, {:6f})".format(gamma, sigma, lam))
+    logging.debug("(gamma, sigma, lambda) = ({:.2f}, {:2f}, {:6f})".format(gamma, sigma, lam))
 
     if kertype == 'gauss':
         Kp_tr = np.exp(-dp/(2*sigma**2))

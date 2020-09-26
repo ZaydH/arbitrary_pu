@@ -1,3 +1,14 @@
+# -*- utf-8 -*-
+r"""
+    mnist.py
+    ~~~~~~~~~~~~~~~
+
+    Downloads and returns MNIST and MNIST-variant datasets (e.g.,~FashionMNIST and KMNIST)
+
+    :copyright: (c) 2020 by Zayd Hammoudeh.
+    :license: MIT, see LICENSE file for more details.
+"""
+
 __all__ = ["load_data"]
 
 from pathlib import Path
@@ -17,15 +28,12 @@ def load_data(dest: Path) -> TensorGroup:
     :return: \p TensorGroup of extracted data
     """
     if config.DATASET == APU_Dataset.MNIST:
-        # noinspection PyTypeChecker
         torchvision.datasets.MNIST(dest, download=True)
         name = "MNIST"
     elif config.DATASET == APU_Dataset.FASHION_MNIST:
-        # noinspection PyTypeChecker
         torchvision.datasets.FashionMNIST(dest, download=True)
         name = "FashionMNIST"
     elif config.DATASET == APU_Dataset.KMNIST:
-        # noinspection PyTypeChecker
         torchvision.datasets.KMNIST(dest, download=True)
         name = "KMNIST"
     else:

@@ -5,10 +5,10 @@ __all__ = ["BASE_DIR",
            "PLOTS_DIR", "RES_DIR", "TORCH_DEVICE",
            "ViewModule", "ViewTo1D",
            "configure_dataset_args", "construct_filename",
+           "export_step1_results",
            "log_decision_boundary", "log_seeds",
-           "plot_centroids", "shuffle_tensors"
+           "shuffle_tensors"
            ]
-
 
 try:
     # noinspection PyUnresolvedReferences
@@ -32,8 +32,6 @@ import time
 from typing import List, Optional, Set, Tuple
 
 import numpy as np
-import pandas as pd
-import seaborn as sns
 
 from fastai.basic_data import DeviceDataLoader
 import torch
@@ -46,7 +44,8 @@ from . import _config as config
 from .datasets import cifar, libsvm_ds, mnist, newsgroups, open_ml, spam, synthetic
 from .datasets import utils as ds_utils
 from .datasets.types import APU_Module, BaseFFModule, SpamFFModule, TensorGroup
-from .types import OptStr, PathOrStr, RiskEstimator
+from .plot_utils import plot_scatter, plot_histogram
+from .types import RiskEstimator
 
 IS_CUDA = torch.cuda.is_available()
 TORCH_DEVICE = torch.device("cuda:0" if IS_CUDA else "cpu")
@@ -68,89 +67,11 @@ PLOTS_DIR = BASE_DIR / "plots"
 RES_DIR = BASE_DIR / "res"
 
 
-def plot_centroids(filename: PathOrStr, ts_grp: TensorGroup, title: OptStr = None,
-                   decision_boundary: Optional[Tuple[float, float]] = None) -> None:
-    filename = Path(filename)
-    msg = f"Generating centroid plot to path \"{str(filename)}\""
-    logging.debug(f"Starting: {msg}")
-
-    # Combine all the data into one tensor
-    x, y = [ts_grp.p_x], [torch.zeros([ts_grp.p_x.shape[0]], dtype=ts_grp.u_tr_y[1].dtype)]
-
-    flds = [(1, (ts_grp.u_tr_x, ts_grp.u_tr_y)), (3, (ts_grp.u_te_x, ts_grp.u_te_y))]
-    for y_offset, (xs, ys) in flds:
-        x.append(xs)
-        y.append(ys.clamp_min(0) + y_offset)
-    x, y = torch.cat(x, dim=0), torch.cat(y, dim=0)
-
-    def _build_labels(lbl: int) -> str:
-        if lbl == 0: return "Pos"
-        sgn = "+" if lbl % 2 == 0 else "-"
-        ds = "U-te" if (lbl - 1) // 2 == 1 else "U-tr"
-        return f"{ds} {sgn}"
-
-    y_str = [_build_labels(_y) for _y in y.cpu().numpy()]
-    # Residual code from t-SNE plotting.  Just list class counts
-    unique, counts = torch.unique(y.squeeze(), return_counts=True)
-    for uniq, cnt in zip(unique.squeeze(), counts.squeeze()):
-        logging.debug("Centroids %s: %d elements", _build_labels(uniq.item()), int(cnt.item()))
-
-    label_col_name = "Label"
-    data = {'x1': x[:, 0].squeeze(), 'x2': x[:, 1].squeeze(), label_col_name: y_str}
-    flatui = ["#0d14e0", "#4bf05b", "#09ac15", "#e6204e", "#ba141d"]
-    markers = ["P", "s", "D", "X", "^"]
-    width, height = 8, 8
-    plt.figure(figsize=(8, 8))
-    ax = sns.lmplot(x="x1", y="x2",
-                    hue="Label",
-                    hue_order=["Pos", "U-tr +", "U-te +", "U-tr -", "U-te -"],
-                    # palette=sns.color_palette("bright", unique.shape[0]),
-                    palette=sns.color_palette(flatui),
-                    data=pd.DataFrame(data),
-                    # legend="full",
-                    # s=20,
-                    # alpha=0.4,
-                    markers=markers,
-                    height=height,
-                    aspect=width / height,
-                    legend=False,
-                    fit_reg=False,
-                    scatter_kws={"s": 20, "alpha": 0.4}
-                    )
-
-    ax.set(xlabel='', ylabel='')
-    if title is not None: ax.set(title=title)
-    plt.legend(title='')
-
-    if decision_boundary is not None:
-        _add_line_from_slope_and_intercept(*decision_boundary)
-
-    xmin = ymin = np.inf
-    xmax = ymax = -np.inf
-    for tensor in (ts_grp.p_x, ts_grp.u_tr_x, ts_grp.u_te_x, ts_grp.test_x):
-        xmin, xmax = min(xmin, float(tensor[:, 0].min())), max(xmax, float(tensor[:, 0].max()))
-        ymin, ymax = min(ymin, float(tensor[:, 1].min())), max(ymax, float(tensor[:, 1].max()))
-    plt.xlim(xmin, xmax)
-    plt.ylim(ymin, ymax)
-
-    filename.parent.mkdir(exist_ok=True, parents=True)
-    plt.savefig(str(filename))
-    plt.close('all')
-
-    # Export a csv of the raw t-SNE data
-    csv_path = filename.with_suffix(".csv")
-    data["y"] = y.squeeze().cpu().numpy()
-    df = pd.DataFrame(data)
-    df.drop(columns=label_col_name, inplace=True)  # Label column not used by LaTeX
-    df.to_csv(str(csv_path), index=False, encoding="utf-8", float_format='%.3f')
-
-    logging.debug(f"COMPLETED: {msg}")
-
-
 def construct_filename(prefix: str, out_dir: Path, file_ext: str,
                        add_timestamp: bool = False) -> Path:
     r""" Standardize naming scheme for the filename """
     def _classes_to_str(cls_set: Set[Enum]) -> str:
+        # noinspection PyTypeChecker
         return ",".join([str(x) for x in sorted(cls_set)])
 
     fields = [prefix] if prefix else []
@@ -206,21 +127,6 @@ def load_module(module: nn.Module, filepath: Path):
     return module
 
 
-def _add_line_from_slope_and_intercept(slope, intercept):
-    r"""
-    Assuming an existing \p matplotlib object is active, this function adds a line in the
-    form :math:`y = m x + b`.
-
-    :param slope: :math:`m` plot slope
-    :param intercept: :math:`b` -- y-intercept
-    """
-    r"""Plot a line from slope and intercept"""
-    axes = plt.gca()
-    x_vals = np.array(axes.get_xlim())
-    y_vals = intercept + slope * x_vals
-    plt.plot(x_vals, y_vals, '--', color="black")
-
-
 def set_random_seeds(seed: Optional[int] = None) -> None:
     r"""
     Sets random seeds to avoid non-determinism
@@ -269,7 +175,7 @@ class ViewTo1D(ViewModule):
 
 
 class ClassifierBlock(nn.Module):
-    def __init__(self, net: APU_Module, estimator: RiskEstimator):
+    def __init__(self, net: nn.Module, estimator: RiskEstimator):
         super().__init__()
         self.module = copy.deepcopy(net)
         self.loss = estimator
@@ -296,13 +202,13 @@ class ClassifierBlock(nn.Module):
 
     def process_batch(self, batch):
         r""" Process a batch including tracking the loss and pushing the gradients """
-        xs, ys, ws = batch
+        xs, ys, ws, tks = batch
 
         self.optim.zero_grad()
 
         # Inner closure needed here for LBFGS support
         def closure():
-            l_closure = self.loss.calc_train_loss(self.forward(xs), ys, ws)
+            l_closure = self.loss.calc_train_loss(self.forward(xs), ys, ws, tks)
             self.optim.zero_grad()
             l_closure.grad_var.backward()
             return l_closure.te_loss
@@ -311,7 +217,7 @@ class ClassifierBlock(nn.Module):
             # noinspection PyNoneFunctionAssignment
             loss = self.optim.step(closure)
         else:
-            loss = self.loss.calc_train_loss(self.forward(xs), ys, ws)
+            loss = self.loss.calc_train_loss(self.forward(xs), ys, ws, tks)
             loss.grad_var.backward()
             self.optim.step()
             loss = loss.te_loss
@@ -321,18 +227,19 @@ class ClassifierBlock(nn.Module):
 
     def calc_valid_loss(self, valid: DeviceDataLoader):
         r""" Calculates and stores the validation loss """
-        all_scores, all_lbls, all_w = [], [], []
+        all_scores, all_lbls, all_w, all_tk = [], [], [], []
 
         self.eval()
         with torch.no_grad():
-            for xs, ys, ws in valid:
+            for xs, ys, ws, tks in valid:
                 all_lbls.append(ys)
                 all_w.append(ws)
+                all_tk.append(tks)
                 all_scores.append(self.forward(xs))
 
         dec_scores, labels = torch.cat(all_scores, dim=0), torch.cat(all_lbls, dim=0)
-        w = torch.cat(all_w, dim=0)
-        val_loss = self.loss.calc_validation_loss(dec_scores, labels, w)
+        w, tk = torch.cat(all_w, dim=0), torch.cat(all_tk, dim=0)
+        val_loss = self.loss.calc_validation_loss(dec_scores, labels, w, tk)
         self.valid_loss = abs(float(val_loss.te_loss.item()))
 
         if self.valid_loss >= self.best_loss:
@@ -358,7 +265,7 @@ class ClassifierBlock(nn.Module):
         """
         names = [f"{self.name()} L-Tr", f"{self.name()} L-Val", f"Best"]
 
-        base_sizes = [20, 20, 6]
+        base_sizes = [12, 12, 4]
         sizes = [max(base, len(name)) for name, base in zip(names, base_sizes)]
         return names, sizes
 
@@ -413,6 +320,56 @@ def configure_dataset_args() -> Tuple[TensorGroup, APU_Module]:
         module = BaseFFModule(x=tensor_grp.p_x, num_hidden_layers=config.NUM_FF_LAYERS,
                               add_dropout=use_dropout)
     return tensor_grp, module
+
+
+def export_step1_results(tg: TensorGroup) -> None:
+    r"""
+    Plot statistics about the step 1 results
+
+    :param tg: Tensor group of data
+    :return: Step 1's accuracy rate
+    """
+    neg_lbl = torch.min(tg.u_tr_y)
+    n_u_tr = tg.u_tr_y.numel()  # Number of training samples
+    # Create a label tensor similar to label tensor
+
+    p_cls_str = "|".join((str(x) for x in sorted(config.POS_TRAIN_CLASSES)))
+    msg = " ".join([f"DS {config.DATASET.name}:", f"Pos {p_cls_str}: ",
+                    f"$\\pi_{{\\mathrm{{tr}}}}= {config.TRAIN_PRIOR:.2f}$:"])
+
+    combined_vals = torch.zeros((n_u_tr, 2))
+    combined_vals[:, 0] = tg.u_tr_y
+    combined_vals[:, 1] = tg.u_tr_sigma
+
+    s1_res_dir = RES_DIR / "step1"
+    # Plot the scatter for the step 1 results
+    fig, ax = plt.subplots(1, 1, figsize=(8, 8))
+    plot_scatter(ax=ax, x=combined_vals[:, 0], y=2 * combined_vals[:, 1] - 1, title=msg,
+                 xlabel=r"$\mathcal{X}_{\mathrm{u-tr}}$ True Label", ylabel=r"$2 \sigma(x) - 1$",
+                 xmin=-1.1, xmax=1.1, ymin=-1.1, ymax=1.1)
+
+    name = construct_filename("s1-sigma", out_dir=s1_res_dir, file_ext="pdf", add_timestamp=True)
+    name.parent.mkdir(exist_ok=True, parents=True)
+    fig.savefig(str(name))
+
+    # Export the raw stats
+    combined_np = combined_vals.numpy()
+    name = construct_filename("s1-raw", out_dir=s1_res_dir, file_ext="txt", add_timestamp=True)
+    np.savetxt(str(name), combined_np, delimiter=",")
+
+    # Plot a histogram of the error
+    y_norm = tg.u_tr_y.clone()  # Normalizes labels to {0,1} to make a sensical error value
+    y_norm[tg.u_tr_y == neg_lbl] = 0
+    err = y_norm - tg.u_tr_sigma
+
+    fig, ax = plt.subplots(1, 1, figsize=(8, 8))
+    plot_histogram(ax=ax, vals=err, n_bins=40, title=msg, hist_range=(-1, 1),
+                   xlabel=r"$y - \sigma(x)$")
+
+    name = construct_filename("s1-hist", out_dir=s1_res_dir, file_ext="pdf", add_timestamp=True)
+    fig.savefig(str(name))
+    # Close all plots
+    plt.close('all')
 
 
 def set_debug_mode(seed: int = 42) -> None:

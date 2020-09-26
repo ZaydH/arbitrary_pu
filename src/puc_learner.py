@@ -15,7 +15,7 @@ from apu.utils import ViewTo1D
 
 class PUcLearner:
     r""" Encapsulates learning for the PUc learner"""
-    BASE_NAME = "puc"
+    BASE_NAME = "PUc"
 
     def __init__(self, prior: Optional[float] = None):
         self._train_start = None
@@ -35,14 +35,9 @@ class PUcLearner:
         r""" Takes a \p torch \p Tensor object and flattens it to be 1D for an SVM """
         return self._flatten(x).cpu().numpy()
 
-    @classmethod
-    def build_name(cls, prior: float) -> str:
-        r""" Helper method standard  """
-        return f"{cls.BASE_NAME}_tr{prior:.2}".replace(".", "_")
-
     def name(self) -> str:
         r""" Name of the learner"""
-        return self.build_name(self._prior)
+        return self.BASE_NAME
 
     def fit(self, ts_grp: TensorGroup):
         r""" Fit the PUc learner """

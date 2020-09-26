@@ -13,6 +13,7 @@ __all__ = ["APU_Dataset", "APU_Module",
 from collections import namedtuple, Counter
 from dataclasses import dataclass
 from enum import Enum
+import logging
 from pathlib import Path
 from typing import List, Optional, Union
 
@@ -342,14 +343,17 @@ class TensorGroup:
     r""" Encapsulates a group of tensors used by the learner """
     p_x: Optional[Tensor] = None
     p_sigma: Optional[Tensor] = None
+    p_tk: Optional[Tensor] = None
 
     u_tr_x: Optional[Tensor] = None
-    u_tr_sigma: Optional[Tensor] = None
     u_tr_y: Optional[Tensor] = None
+    u_tr_sigma: Optional[Tensor] = None
+    u_tr_tk: Optional[Tensor] = None
 
     u_te_x: Optional[Tensor] = None
-    u_te_sigma: Optional[Tensor] = None
     u_te_y: Optional[Tensor] = None
+    u_te_sigma: Optional[Tensor] = None
+    u_te_tk: Optional[Tensor] = None
 
     # test has no sigma since sigma is a training only parameter
     test_x: Optional[Tensor] = None
@@ -387,24 +391,50 @@ class TensorGroup:
             all_sigma = []
             with torch.no_grad():
                 for xs, in dl:
-                    sig_vals = sigma_module.calc_cal_weights(xs, prior=prior)
+                    sig_vals = sigma_module.calc_cal_weights(xs)
                     all_sigma.append(sig_vals)
 
             w = torch.cat(all_sigma).detach().cpu()
-            if len(w.shape) > 1: w = w.squeeze(dim=1)
+            tk = self._calc_topk(sigma=w, prior=prior)
 
-            # Sanity check the weights information
-            assert float(w.min().item()) >= 0, "Minimum sigma must be greater than or equal to 0"
-            assert float(w.max().item()) <= 1, "Maximum sigma must be less than or equal to 1"
-            assert w.numel() == x.shape[0], "Number of weights does not match number of elements"
-            assert len(w.shape) == 1, "Strange size for sigma vector"
+            for _w, suffix in [(w, "sigma"), (tk, "tk")]:
+                if len(_w.shape) > 1:
+                    _w = _w.squeeze(dim=1)
+                attr_name = f"{ds_name}_{suffix}"
 
-            assert self.__getattribute__(f"{ds_name}_sigma") is None, f"{ds_name}_sigma is not None"
-            self.__setattr__(f"{ds_name}_sigma", w)
+                # Sanity check the _weights information
+                assert float(_w.min().item()) >= 0, "Min sigma must be greater than or equal to 0"
+                assert float(_w.max().item()) <= 1, "Max sigma must be less than or equal to 1"
+                assert _w.numel() == x.shape[0], "Num. of weights does not match num. of elements"
+                assert len(_w.shape) == 1, f"Strange size for {attr_name} vector"
+
+                assert self.__getattribute__(attr_name) is None, f"{attr_name} is not None"
+                self.__setattr__(attr_name, _w)
+
+    @staticmethod
+    def _calc_topk(sigma: Tensor, prior: float):
+        r"""
+        Top-K sigma values
+
+        :param prior: Positive train prior
+        :return: Top-K sigma values
+        """
+        assert 0 < prior <= 1, "Invalid prior"
+
+        n = sigma.shape[0]
+        expect_pos = int(prior * n)  # Expected number of positive examples
+
+        vals, indices = sigma.topk(k=expect_pos)
+
+        top_k = torch.zeros(n)
+        top_k[indices] = 1
+        return top_k
 
     def reset_sigmas(self) -> None:
         r""" DEBUG ONLY.  Reset the sigmas back to None"""
+        logging.debug("Resetting TensorGroup sigma and top-k values")
         self.p_sigma = self.u_tr_sigma = self.u_te_sigma = None
+        self.p_tk = self.u_tr_tk = self.u_te_tk = None
 
 
 class CnnModule(APU_Module):

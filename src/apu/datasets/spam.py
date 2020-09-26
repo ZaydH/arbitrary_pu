@@ -2,10 +2,7 @@ from collections import namedtuple
 from enum import Enum
 import logging
 from pathlib import Path
-# import tarfile
 from typing import List, Optional, Tuple
-
-# import numpy as np
 
 import torch
 from torch import Tensor
@@ -13,8 +10,6 @@ from torchvision.datasets.utils import download_file_from_google_drive
 
 from .. import _config as config
 from .utils import binom_sample
-# from .utils import binom_sample, download_nltk_tokenizer, make_elmo_embedders,
-#     use_elmo_to_process_doc
 from .types import Labels, TensorGroup
 
 

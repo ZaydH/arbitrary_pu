@@ -5,7 +5,7 @@ r"""
 
     Object types used by the aPU Learners
 
-    :copyright: (c) 2019 by Zayd Hammoudeh.
+    :copyright: (c) 2020 by Zayd Hammoudeh.
     :license: , see MIT for more details.
 """
 
@@ -62,11 +62,12 @@ class RiskEstimator(ABC):
         self.tr_loss = train_loss
         self.val_loss = validation_loss
 
-    def calc_train_loss(self, dec_scores: Tensor, lbls: Tensor, sigma_x: Tensor):
+    def calc_train_loss(self, dec_scores: Tensor, lbls: Tensor, sigma_x: Tensor, tk: Tensor):
         r""" Calculates the loss using the TRAINING specific loss function """
         return self._loss(dec_scores, lbls, sigma_x, self.tr_loss)
 
-    def calc_validation_loss(self, dec_scores: Tensor, lbls: Tensor, sigma_x: Tensor):
+    def calc_validation_loss(self, dec_scores: Tensor, lbls: Tensor, sigma_x: Tensor,
+                             tk: Tensor):
         r""" Calculates the loss using the VALIDATION specific loss function """
         return self._loss(dec_scores, lbls, sigma_x, self.val_loss)
 

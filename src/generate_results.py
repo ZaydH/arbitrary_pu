@@ -5,7 +5,8 @@ import logging
 from pathlib import Path
 import re
 from types import ModuleType
-from typing import ClassVar, List, Optional, Union
+from typing import Callable, ClassVar, List, Optional, Union
+import warnings
 
 import numpy as np
 from sklearn.metrics import confusion_matrix, average_precision_score, f1_score
@@ -18,13 +19,15 @@ from torch.utils.data import TensorDataset
 
 from apu import config, LearnerParams
 from apu.datasets.types import APU_Module, TensorGroup
+import apu.two_step
 from apu.utils import RES_DIR, TORCH_DEVICE, construct_filename, log_decision_boundary
+
 from puc_learner import PUcLearner
 
 
 @dataclass(order=True)
 class LearnerResults:
-    r""" Encapsulates ALL results for a single NLP learner model """
+    r""" Encapsulates ALL results for a single learner model """
     FIELD_SEP: ClassVar[str] = ","
 
     @dataclass(init=True, order=True)
@@ -38,6 +41,10 @@ class LearnerResults:
 
     loss_name = None
     valid_loss = None
+
+    step1_soft_err = None
+    step1_hard_err = None
+    step1_topk_err = None
 
     decision_m: float = None
     decision_b: float = None
@@ -55,7 +62,7 @@ def calculate_results(tg: TensorGroup, our_learner, puc_learners: List[PUcLearne
     Calculates and writes to disk the model's results
 
     :param tg: Tensor group containing the test conditions
-    :param our_learner: PURR, PU2aPNU, or PU2wUU
+    :param our_learner: e.g., PURR, PU2aPNU, or PU2wUU
     :param puc_learners: Learner(s) implementing the PUc algorithm
     :param dest_dir: Location to write the results
     :param exclude_puc: DEBUG ONLY. Exclude the PUc results.
@@ -67,17 +74,22 @@ def calculate_results(tg: TensorGroup, our_learner, puc_learners: List[PUcLearne
     our_learner.eval()
 
     all_res = dict()
-    ds_flds = (("unlabel_train", TensorDataset(tg.u_tr_x, tg.u_tr_y)),
-               ("tr_test", TensorDataset(tg.test_x_tr, tg.test_y_tr)),
-               ("unlabel_test", TensorDataset(tg.u_te_x, tg.u_te_y)),
-               ("test", TensorDataset(tg.test_x, tg.test_y)))
+    ds_flds = (("unlabel_train", TensorDataset(tg.u_tr_x, tg.u_tr_y), logging.debug),
+               ("tr_test", TensorDataset(tg.test_x_tr, tg.test_y_tr), logging.debug),
+               ("unlabel_test", TensorDataset(tg.u_te_x, tg.u_te_y), logging.debug),
+               ("test", TensorDataset(tg.test_x, tg.test_y), logging.info))
 
     for block_name, block in our_learner.blocks():
         res = LearnerResults()
         res.loss_name = block.loss.name()
         res.valid_loss = block.best_loss
+        if apu.two_step.is_two_step(block.loss):
+            for name in ["soft", "hard", "topk"]:
+                val_err = our_learner.__getattribute__(f"s1_{name}_acc")
+                res.__setattr__(f"step1_{name}_err", 1. - val_err)
+                # res.step1_soft_err = 1 - our_learner.s1_soft_acc
 
-        for ds_name, ds in ds_flds:
+        for ds_name, ds, _log in ds_flds:
             # noinspection PyTypeChecker
             dl = DeviceDataLoader.create(ds, shuffle=False, drop_last=False, bs=config.BATCH_SIZE,
                                          num_workers=0, device=TORCH_DEVICE)
@@ -92,7 +104,7 @@ def calculate_results(tg: TensorGroup, our_learner, puc_learners: List[PUcLearne
             dec_scores = torch.cat(dec_scores, dim=0).squeeze().cpu()
             y_hat, dec_scores = dec_scores.sign().cpu().numpy(), dec_scores.cpu().numpy()
             # Store for name "unlabel" or "test"
-            res.__setattr__(ds_name, _single_ds_results(block, ds_name, y, y_hat, dec_scores))
+            res.__setattr__(ds_name, _single_ds_results(block, ds_name, y, y_hat, dec_scores, _log))
 
         if config.DATASET.is_synthetic():
             log_decision_boundary(block.module, name=block_name)
@@ -104,39 +116,41 @@ def calculate_results(tg: TensorGroup, our_learner, puc_learners: List[PUcLearne
             if config.DATASET.is_synthetic():
                 log_decision_boundary(puc, name=puc.name())
 
-    config.print_configuration()
+    config.print_configuration(log=logging.debug)
     _write_results_to_disk(dest_dir, our_learner.train_start_time(), all_res)
 
     return all_res
 
 
-def _single_ds_results(block: "Union[PUcLearner, APU_Module]",
-                       ds_name: str, y: np.ndarray, y_hat: np.ndarray,
-                       dec_scores: np.ndarray) -> LearnerResults.DatasetResult:
+def _single_ds_results(block: "Union[PUcLearner, APU_Module]", ds_name: str,
+                       y: np.ndarray, y_hat: np.ndarray, dec_scores: np.ndarray,
+                       _log: Callable) -> LearnerResults.DatasetResult:
     r""" Logs and returns the results on a single dataset """
     res = LearnerResults.DatasetResult(y.shape[0])
 
     str_prefix = f"{block.name()} {ds_name}:"
 
-    logging.debug(f"{str_prefix} Dataset Size: {res.ds_size:,}")
+    _log(f"{str_prefix} Dataset Size: {res.ds_size:,}")
     # Pre-calculate fields needed in other calculations
     res.conf_matrix = confusion_matrix(y, y_hat)
     assert np.sum(res.conf_matrix) == res.ds_size, "Verify size matches"
 
     # Calculate prior information
     res.accuracy = np.trace(res.conf_matrix) / res.ds_size
-    logging.debug(f"{str_prefix} Accuracy: {100. * res.accuracy:.3}%")
+    _log(f"{str_prefix} Accuracy: {100. * res.accuracy:.3}%")
 
-    res.auroc = auc_roc_score(torch.tensor(dec_scores).cpu(), torch.tensor(y).cpu())
-    logging.debug(f"{str_prefix} AUROC: {res.auroc:.6}")
+    with warnings.catch_warnings():
+        warnings.filterwarnings(action='ignore', category=UserWarning)
+        res.auroc = auc_roc_score(torch.tensor(dec_scores).cpu(), torch.tensor(y).cpu())
+    _log(f"{str_prefix} AUROC: {res.auroc:.6}")
 
     res.auprc = average_precision_score(y, dec_scores)
-    logging.debug(f"{str_prefix} AUPRC: {res.auprc:.6}")
+    _log(f"{str_prefix} AUPRC: {res.auprc:.6}")
 
     res.f1 = float(f1_score(y, y_hat))
-    logging.debug(f"{str_prefix} F1-Score: {res.f1:.6f}")
+    _log(f"{str_prefix} F1-Score: {res.f1:.6f}")
 
-    logging.debug(f"{str_prefix} Confusion Matrix:\n{res.conf_matrix}")
+    _log(f"{str_prefix} Confusion Matrix:\n{res.conf_matrix}")
     res.conf_matrix = re.sub(r"\s+", " ", str(res.conf_matrix))
 
     return res
@@ -145,12 +159,16 @@ def _single_ds_results(block: "Union[PUcLearner, APU_Module]",
 def _build_puc_results(puc_learner: PUcLearner, ds_flds) -> LearnerResults:
     r""" Construct the PUc learner results """
     res = LearnerResults()
-    res.loss_name, res.valid_loss = puc_learner.name(), None
-    for ds_name, ds in ds_flds:
+    res.loss_name = puc_learner.name()
+    res.valid_loss = None
+    res.step1_soft_err = res.step1_hard_err = res.step1_topk_err = None
+
+    for ds_name, ds, _log in ds_flds:
         y = ds.tensors[1].cpu().numpy()
         y_hat = puc_learner.predict(ds.tensors[0])
         dec_scores = puc_learner.decision_function(ds.tensors[0])
-        res.__setattr__(ds_name, _single_ds_results(puc_learner, ds_name, y, y_hat, dec_scores))
+        _res_val = _single_ds_results(puc_learner, ds_name, y, y_hat, dec_scores, _log)
+        res.__setattr__(ds_name, _res_val)
     return res
 
 
@@ -224,7 +242,8 @@ def _write_results_to_disk(dest_dir: Path, start_time: str, all_res: dict) -> No
             assert attr_val is not None, "Attribute value unset"
             fields.append(_log_val(attr_val))
 
-        for field_name in ("valid_loss", "decision_m", "decision_b"):
+        for field_name in ("valid_loss", "step1_soft_err", "step1_hard_err", "step1_topk_err",
+                           "decision_m", "decision_b"):
             if i == 0: header.append(field_name)
             fields.append(_log_val(block_res.__getattribute__(field_name)))
 

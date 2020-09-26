@@ -17,9 +17,6 @@ from .utils import shared_tensor_dataset_importer
 
 USE_TRANSFER = True
 
-# MODEL = fastai.vision.models.resnet34
-# MODEL = fastai.vision.models.resnet50
-# MODEL = torchvision.models.vgg16_bn
 MODEL = fastai.vision.models.densenet121
 
 
