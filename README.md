@@ -3,7 +3,7 @@
 [![docs](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/ZaydH/arbitrary_pu/blob/master/LICENSE)
 
 **Authors**: [Zayd Hammoudeh](https://ZaydH.github.io) & [Daniel Lowd](https://ix.cs.uoregon.edu/~lowd/)  
-**Link**: [NeurIPS'20](https://nips.cc/Conferences/2020) (to appear)
+**Link**: [NeurIPS'20](https://proceedings.neurips.cc/paper/2020/hash/98b297950041a42470269d56260243a1-Abstract.html)
 
 This repository contains the source code for reproducing the results in the paper "Learning from Positive and Unlabeled Data with Arbitrary Positive Shift" published at NeurIPS'20.
 
@@ -31,7 +31,7 @@ Results are printed to the console. The tool also creates a folder named `res` i
 
 ### Requirements
 
-Our implementation was tested in Python&nbps;3.6.5.  Minimum testing was performed with&nbsp;3.7.1 but `requirements.txt` may need to change depending on your local Python configuration.  It uses the [PyTorch](https://pytorch.org/) neural network framework, version&nbsp;1.3.1 and&nbsp;1.4.  For the full requirements, see `requirements.txt` in the `src` directory.
+Our implementation was tested in Python&nbsp;3.6.5.  Minimum testing was performed with&nbsp;3.7.1 but `requirements.txt` may need to change depending on your local Python configuration.  It uses the [PyTorch](https://pytorch.org/) neural network framework, version&nbsp;1.3.1 and&nbsp;1.4.  For the full requirements, see `requirements.txt` in the `src` directory.
 
 We recommend running our program in a [virtual environment](https://docs.python.org/3/tutorial/venv.html).  Once your virtual environment is created and *active*, run the following in the `src` directory:
 
